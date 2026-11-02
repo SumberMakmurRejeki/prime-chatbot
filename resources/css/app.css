@@ -1,0 +1,560 @@
+@import 'tailwindcss';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+@source "../**/*.blade.php";
+@source "../**/*.js";
+@source "../**/*.ts";
+@source "../**/*.vue";
+
+@theme {
+    --font-sans: 'NotionInter', 'Inter', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+    --color-prime-bg: #ffffff;
+    --color-prime-panel: #ffffff;
+    --color-prime-surface: #ffffff;
+    --color-prime-soft: #f6f5f4;
+    --color-prime-warm-white: #f6f5f4;
+    --color-prime-text: rgba(0, 0, 0, 0.95);
+    --color-prime-ink: rgba(0, 0, 0, 0.95);
+    --color-prime-muted: #615d59;
+    --color-prime-placeholder: #a39e98;
+    --color-prime-border: rgba(0, 0, 0, 0.1);
+    --color-prime-primary: #0075de;
+    --color-prime-primary-active: #005bab;
+    --color-prime-primary-strong: #005bab;
+    --color-prime-primary-soft: #f2f9ff;
+    --color-prime-active-badge-bg: #f2f9ff;
+    --color-prime-active-badge-text: #097fe8;
+    --color-prime-sidebar: #071b2e;
+    --color-prime-sidebar-strong: #061a33;
+    --color-prime-sidebar-border: rgba(255, 255, 255, 0.08);
+    --color-prime-sidebar-muted: rgba(255, 255, 255, 0.68);
+    --color-prime-sidebar-soft: rgba(255, 255, 255, 0.08);
+    --color-prime-sidebar-active: #0b66d8;
+    --color-prime-danger: #d53445;
+    --color-prime-danger-strong: #b91c2c;
+    --color-prime-danger-soft: #fff1f2;
+    --color-prime-success: #167c49;
+    --color-prime-success-soft: #ebfff3;
+    --color-prime-warning: #a05a00;
+    --color-prime-warning-soft: #fff7e8;
+    --color-prime-error: var(--color-prime-danger);
+
+    --radius-micro: 4px;
+    --radius-card: 12px;
+    --radius-modal: 16px;
+    --radius-pill: 9999px;
+    --tracking-display: -2.125px;
+    --tracking-heading: -1.5px;
+    --tracking-body: 0px;
+    --tracking-micro: 0.125px;
+    --shadow-level-2:
+        rgba(0, 0, 0, 0.02) 0px 2px 6px,
+        rgba(0, 0, 0, 0.02) 0px 5px 12px,
+        rgba(0, 0, 0, 0.03) 0px 10px 20px,
+        rgba(0, 0, 0, 0.04) 0px 16px 30px;
+    --shadow-level-3:
+        rgba(0, 0, 0, 0.01) 0px 1px 3px,
+        rgba(0, 0, 0, 0.02) 0px 3px 7px,
+        rgba(0, 0, 0, 0.02) 0px 7px 15px,
+        rgba(0, 0, 0, 0.04) 0px 14px 28px,
+        rgba(0, 0, 0, 0.05) 0px 23px 52px;
+}
+
+/* Shell kandidat Inertia memakai kolom tetap; lebar collapse disamakan dengan shell Blade. */
+@media (min-width: 1024px) {
+    #prime-shell.sidebar-collapsed #prime-sidebar {
+        width: 5.75rem;
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+    }
+
+    #prime-shell.sidebar-collapsed #prime-main-content {
+        padding-left: 5.75rem;
+    }
+}
+
+@layer base {
+    html {
+        font-family: var(--font-sans);
+        color-scheme: light;
+    }
+
+    body {
+        background-color: var(--color-prime-bg);
+        color: var(--color-prime-ink);
+        text-rendering: optimizeLegibility;
+        letter-spacing: var(--tracking-body);
+        font-weight: 400;
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+        color: var(--color-prime-ink);
+        font-weight: 700;
+    }
+
+    h1,
+    h2 {
+        letter-spacing: var(--tracking-heading);
+    }
+
+    input::placeholder,
+    textarea::placeholder {
+        color: var(--color-prime-placeholder);
+    }
+
+    * {
+        scrollbar-color: #b9c2db transparent;
+    }
+
+    summary::-webkit-details-marker {
+        display: none;
+    }
+}
+
+@layer components {
+    #prime-sidebar summary,
+    #prime-sidebar a,
+    #prime-sidebar [role='button'] {
+        -webkit-user-select: none;
+        user-select: none;
+    }
+
+    .prime-icon-tooltip::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 8px);
+        transform: translateX(-50%) translateY(4px);
+        border-radius: 6px;
+        background-color: rgba(0, 0, 0, 0.88);
+        padding: 6px 8px;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1;
+        letter-spacing: 0;
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 140ms ease, transform 140ms ease;
+        z-index: 60;
+    }
+
+    .prime-icon-tooltip:focus-visible::after,
+    .prime-icon-tooltip:hover::after {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+
+
+    .prime-rail-tooltip {
+        position: fixed;
+        left: 6rem;
+        z-index: 70;
+        transform: translateY(-50%);
+        border: 1px solid rgb(255 255 255 / 0.12);
+        border-radius: 0.375rem;
+        background: #061a33;
+        padding: 0.45rem 0.65rem;
+        color: white;
+        font-size: 0.75rem;
+        font-weight: 500;
+        line-height: 1rem;
+        white-space: nowrap;
+        pointer-events: none;
+    }
+
+    .prime-collapsed-navigation {
+        display: none;
+    }
+
+    @media (min-width: 1024px) {
+        #prime-shell.sidebar-collapsed #prime-sidebar nav:not(.prime-collapsed-navigation) {
+            display: none;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar .prime-collapsed-navigation {
+            display: flex;
+        }
+    }
+
+    @media (max-width: 1023px) {
+        .prime-rail-tooltip {
+            display: none;
+        }
+    }
+    @media (min-width: 1024px) {
+        .prime-sidebar-logo-compact {
+            display: none;
+        }
+
+        #prime-sidebar,
+        #prime-main-content {
+            transition:
+                width 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+                padding-left 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+
+        #prime-sidebar nav a,
+        #prime-sidebar summary,
+        #prime-sidebar details {
+            transition:
+                width 220ms ease,
+                height 220ms ease,
+                margin 220ms ease,
+                padding 220ms ease,
+                border-color 220ms ease,
+                background-color 220ms ease,
+                box-shadow 220ms ease;
+        }
+
+        #prime-sidebar [data-sidebar-label] {
+            transition:
+                opacity 180ms ease,
+                transform 180ms ease;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar {
+            width: 5.75rem !important;
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-main-content {
+            padding-left: 5.75rem !important;
+        }
+
+        #prime-shell.sidebar-collapsed .prime-sidebar-logo-compact {
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #prime-shell.sidebar-collapsed [data-sidebar-label] {
+            display: none !important;
+            opacity: 0 !important;
+            transform: translateX(-6px) !important;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar > div:first-child {
+            justify-content: center;
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar > div:first-child > a {
+            display: flex;
+            flex: none;
+            justify-content: center;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar nav section > button {
+            justify-content: center;
+            width: 3.25rem;
+            height: 3.25rem;
+            margin-left: auto;
+            margin-right: auto;
+            padding: 0;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar nav section > button > .h-4:last-child,
+        #prime-shell.sidebar-collapsed #prime-sidebar nav section > div {
+            display: none;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar .space-y-3,
+        #prime-shell.sidebar-collapsed #prime-sidebar .space-y-2 {
+            --tw-space-y-reverse: 0;
+            margin-top: 0;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar nav a,
+        #prime-shell.sidebar-collapsed #prime-sidebar summary {
+            justify-content: center !important;
+            width: 3.25rem !important;
+            height: 3.25rem !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            border-radius: 1rem !important;
+            padding: 0 !important;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar nav a .h-4,
+        #prime-shell.sidebar-collapsed #prime-sidebar nav a .h-5,
+        #prime-shell.sidebar-collapsed #prime-sidebar summary .h-4,
+        #prime-shell.sidebar-collapsed #prime-sidebar summary .h-5 {
+            margin-right: 0;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar nav details {
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar nav details > div {
+            display: none !important;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar nav details summary {
+            margin-bottom: 0.6rem;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar .border-t {
+            margin-left: 0.25rem;
+            margin-right: 0.25rem;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar .border-t > a {
+            width: 3.25rem !important;
+            height: 3.25rem !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            justify-content: center !important;
+            border-radius: 1rem !important;
+            padding: 0 !important;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar .border-t > a .h-5 {
+            margin-right: 0;
+        }
+
+        #prime-shell.sidebar-collapsed #prime-sidebar .mt-3.flex.items-center.gap-3.rounded-2xl {
+            justify-content: center !important;
+            padding: 0.9rem 0 !important;
+        }
+    }
+
+    /* ---------- Login (industrial) ---------- */
+    /* Hero: foto industri full-bleed dengan overlay gelap agar teks kontras. */
+    .prime-login-hero {
+        background-color: #0d2334;
+    }
+
+    .prime-login-hero img {
+        filter: saturate(0.88);
+    }
+
+    /* Tab aktif ditandai atribut data-active oleh resources/js/app.js. */
+    .prime-login-tab {
+        border-color: transparent;
+    }
+
+    .prime-login-tab[data-active='true'] {
+        border-bottom-color: var(--color-prime-primary);
+        color: var(--color-prime-ink);
+    }
+
+    .prime-login-input {
+        width: 100%;
+        border: 1px solid var(--color-prime-border);
+        border-radius: 0.6rem;
+        background-color: #ffffff;
+        padding: 0.85rem 1rem;
+        font-size: 0.95rem;
+        line-height: 1.5;
+        color: rgba(0, 0, 0, 0.95);
+        transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+
+    .prime-login-input::placeholder {
+        color: #a39e98;
+    }
+
+    .prime-login-input:hover {
+        border-color: rgba(0, 0, 0, 0.18);
+    }
+
+    .prime-login-input:focus {
+        border-color: var(--color-prime-primary);
+        box-shadow: 0 0 0 4px rgba(0, 117, 222, 0.14);
+        outline: none;
+    }
+
+    .prime-login-submit {
+        display: inline-flex;
+        width: 100%;
+        align-items: center;
+        justify-content: center;
+        gap: 0.6rem;
+        border-radius: 0.6rem;
+        padding: 0.9rem 1.4rem;
+        font-size: 0.95rem;
+        font-weight: 600;
+        transition: background-color 160ms ease, transform 120ms ease, box-shadow 160ms ease;
+box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+    }
+
+    .prime-login-submit:hover {
+        transform: translateY(-1px);
+    }
+
+    .prime-login-submit:active {
+        transform: scale(0.985);
+    }
+
+    .prime-login-submit:focus-visible {
+        outline: 2px solid var(--color-prime-primary);
+        outline-offset: 2px;
+    }
+
+    .prime-login-submit--staff {
+        background-color: var(--color-prime-primary);
+        color: #ffffff;
+    }
+
+    .prime-login-submit--staff:hover {
+        background-color: var(--color-prime-primary-active);
+box-shadow: 0 2px 8px rgba(0, 91, 171, 0.35);
+    }
+
+    .prime-login-submit--guest {
+        background-color: rgba(0, 0, 0, 0.88);
+        color: #ffffff;
+    }
+
+    .prime-login-submit--guest:hover {
+        background-color: #121212;
+    }
+
+    /* Gerak halus: reveal card saat halaman dibuka. */
+    @keyframes prime-login-reveal {
+        from {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .prime-login-reveal {
+        animation: prime-login-reveal 500ms ease-out both;
+    }
+
+    /* Transisi panel saat ganti tab Akun/Tamu; terpisah dari reveal awal halaman. */
+    .prime-login-panel-enter {
+        animation: prime-login-panel-enter 220ms ease-out both;
+    }
+
+    @keyframes prime-login-panel-enter {
+        from {
+            opacity: 0;
+            transform: translateX(12px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .prime-login-reveal,
+        .prime-login-panel-enter {
+            animation: none;
+        }
+
+        .prime-login-submit,
+        .prime-login-tab {
+            transition: none;
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        #prime-sidebar,
+        #prime-main-content,
+        #prime-sidebar *,
+        #prime-main-content * {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            scroll-behavior: auto !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
+
+
+    main table thead th {
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0;
+    }
+
+    main table tbody td {
+        font-size: 16px;
+        font-weight: 400;
+        letter-spacing: 0;
+        color: var(--color-prime-ink);
+    }
+
+    main table tbody tr {
+        transition: box-shadow 180ms ease;
+    }
+
+    main table tbody tr:hover {
+        box-shadow: var(--shadow-level-2);
+    }
+
+    .prime-scrollbar::-webkit-scrollbar {
+        width: 0.55rem;
+        height: 0.55rem;
+    }
+
+    .prime-scrollbar::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgba(102, 112, 133, 0.35);
+    }
+
+    .prime-scrollbar::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    .fc .fc-toolbar-title {
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: var(--color-prime-ink);
+    }
+
+    .fc .fc-button {
+        border: 1px solid var(--color-prime-border);
+        background: #ffffff;
+        color: var(--color-prime-ink);
+        font-size: 0.85rem;
+        font-weight: 600;
+        text-transform: none;
+    }
+
+    .fc .fc-button:hover,
+    .fc .fc-button.fc-button-active {
+        background: var(--color-prime-primary-soft);
+        border-color: var(--color-prime-primary);
+        color: var(--color-prime-primary);
+    }
+
+    .fc .fc-daygrid-day-number,
+    .fc .fc-col-header-cell-cushion {
+        color: var(--color-prime-ink);
+        font-weight: 500;
+    }
+
+    .fc .fc-event {
+        border-radius: 0.45rem;
+        padding: 0.1rem 0.35rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        border-width: 1px;
+    }
+
+    #maintenance-calendar.calendar-empty .fc-view-harness {
+        opacity: 0;
+    }
+}

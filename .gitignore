@@ -1,0 +1,75 @@
+/.phpunit.cache
+/node_modules
+/public/build
+/public/hot
+/public/storage
+/storage/*.key
+/storage/pail
+/vendor
+.env
+
+# Environment secrets and local overrides; keep example templates eligible.
+.env.*
+!.env.example
+!.env.testing.example
+
+# Runtime exports, temporary spool data, database dumps and local backups.
+/storage/framework/report-pm-spool/
+/*.dump
+/*.sql
+/*.sql.gz
+/*.bak
+/*.backup
+/*.tmp
+/database/dumps/
+/backups/
+/storage/backups/
+
+# OS-generated metadata.
+.DS_Store
+Thumbs.db
+Desktop.ini
+.env.backup
+.env.production
+/.env.testing
+.phpactor.json
+.phpunit.result.cache
+Homestead.json
+Homestead.yaml
+npm-debug.log
+yarn-error.log
+/auth.json
+/.fleet
+/.idea
+/.nova
+/.vscode
+/.zed
+/.omo
+/test-results
+
+# Local agent/runtime artifacts
+/.pi/
+/.playwright-mcp/
+
+# Generated analysis artifacts
+/graphify-out/
+/test-output*.txt
+/uat-*.png
+/.merge_file_*
+# Repository-local AI tooling policy
+/.agents/
+/.amp/
+/.claude/
+/.codex/
+/.factory/
+/.grok/
+/.omp/
+/.pi/
+/AGENTS.md
+/boost.json
+/.mcp.json
+/CLAUDE.md
+/opencode.json
+
+# Unused zero-byte favicon placeholder; not referenced by the application.
+/public/favicon.ico

@@ -1,0 +1,211 @@
+# PRIME Google - Baseline Hardening Scope
+# Source brief: baseline hardening brief, 2026-11-02 (pre-first-commit)
+# Status: bounded; ready for slice-tasks
+
+meta:
+  project: PRIME Google
+  initiative: pre-first-commit baseline hardening
+  created: 2026-11-02
+  scope_version: 1
+  repo_state_at_scoping:
+    repository: independent Git repository
+    branch: main (unborn HEAD)
+    commits: 0
+    remotes: 0
+    specs_dir: absent before this file
+
+core_value: >
+  Make the initial PRIME Google commit safe, self-describing and reproducible,
+  without touching the original PRIME project or any shared external service.
+
+summary: >
+  PRIME Google is a Laravel/PHP application derived from PRIME, currently
+  uncommitted. Before its first commit it needs baseline hardening: no shared
+  Qdrant defaults, no secrets or runtime artifacts in Git candidates, no silent
+  privileged account seeding, and documentation that states only real behavior.
+  
+  The initiative is deliberately conservative and reversible. It corrects
+  unsafe defaults and exclusions, adds an independent README, and resolves
+  stale references, while preserving all existing AI, PM-generator and test
+  contracts. Verification is bounded to local checks with no database,
+  Qdrant or external AI traffic.
+
+  The deliverable is a reviewed candidate baseline plus an evidence-backed
+  readiness report, not a committed or pushed repository. The owner retains
+  authority over staging, commit and push.
+
+in_scope:
+  - id: E01
+    epic: Baseline preflight and integrity snapshot
+    outcome: >
+      Repository identity, branch, index state and existing files are recorded,
+      plus hashes of relevant configuration, proving the original PRIME project
+      is untouched.
+    maps_to: story e03s01 baseline-preflight
+  - id: E02
+    epic: Qdrant legacy fallback isolation
+    outcome: >
+      Every effective Qdrant collection fallback stops pointing at the shared
+      original collection; missing configuration fails closed where contracts
+      allow, or falls back to the isolated Google project identity.
+    maps_to: story e03s01 qdrant-legacy-safety
+  - id: E03
+    epic: Git exclusion hardening
+    outcome: >
+      Environment secrets, local variants, runtime spool/export data, database
+      dumps, backups and OS junk cannot become Git candidates, while
+      .env.example and .env.testing.example stay eligible.
+    maps_to: story e03s01 gitignore-hardening
+  - id: E04
+    epic: Default-account seeding safety
+    outcome: >
+      Any default Admin/operator account with a fixed password cannot be
+      created silently in staging or production; authorized local/QA fixture
+      workflows remain intact. Findings that need an auth policy decision are
+      reported as blockers, not invented.
+    maps_to: story e03s01 seeder-safety
+  - id: E05
+    epic: Independent project documentation
+    outcome: >
+      A project-specific README states project identity, prerequisites,
+      independent setup, env templates, development/QA database identities,
+      test isolation, temporary Qdrant status and the planned Gemini File
+      Search replacement, without secrets or copied PRIME docs.
+    maps_to: story e03s01 minimal-documentation
+  - id: E06
+    epic: Stale reference and favicon resolution
+    outcome: >
+      Informational references to Docs/modules/AI_ASSISTANT.md point to accurate
+      documentation or are removed; runtime-critical references are reported
+      unchanged. The zero-byte favicon is either excluded as an unused
+      placeholder or reported as a non-blocking asset issue.
+    maps_to: story e03s01 stale-references
+  - id: E07
+    epic: Bounded safety verification
+    outcome: >
+      PHP syntax checks pass on changed PHP files; focused configuration,
+      seeder-safety and database-isolation tests pass under PHP 8.3.36 and
+      SQLite :memory:; sensitive-file screening runs read-only against the
+      final candidate inventory.
+    maps_to: story e03s01 bounded-verification
+
+out_of_scope:
+  - item: Gemini File Search implementation or any AI/RAG refactoring
+    disposition: deferred
+    reason: >
+      Replacement AI runtime is a separate initiative; changing it now would
+      invalidate the baseline and its tests.
+  - item: Qdrant operations, connection, re-indexing or deletion
+    disposition: too-risky
+    reason: >
+      The original PRIME Qdrant deployment is shared and protected; any
+      operation risks another project's operational data.
+  - item: Database creation, migration or real seeding
+    disposition: too-risky
+    reason: >
+      Approved databases are recorded only; executing schema or seeders could
+      alter development or QA state and exceeds a baseline safety pass.
+  - item: Composer/npm installs, updates or lockfile changes
+    disposition: deferred
+    reason: >
+      Dependency churn is unrelated to baseline safety and would obscure
+      review of the candidate inventory.
+  - item: Laravel Boost or other tooling installation
+    disposition: not-valuable
+    reason: >
+      No baseline requirement depends on it; installing tooling widens the
+      change surface without improving safety.
+  - item: Global PHP, Laragon or machine-level environment changes
+    disposition: not-valuable
+    reason: >
+      Environment-wide changes exceed project scope and cannot be verified
+      independently by a reviewer.
+  - item: Frontend redesign, favicon artwork or unrelated UI changes
+    disposition: not-valuable
+    reason: >
+      Baseline hardening covers safety and accuracy only; design work is a
+      separate initiative.
+  - item: Git staging, commit, push, tags or remotes
+    disposition: deferred
+    reason: >
+      The owner retains commit authority; this initiative delivers a reviewed
+      candidate inventory only.
+  - item: LICENSE, CHANGELOG or other governance files
+    disposition: deferred
+    reason: >
+      No existing contract requires them; adding them now would create
+      unverified policy.
+  - item: Changes to PM generator or AI runtime behavior
+    disposition: too-risky
+    reason: >
+      Preserving behavior is an acceptance criterion; behavior changes need
+      their own stories and tests.
+  - item: Test-suite expansion beyond focused safety checks
+    disposition: deferred
+    reason: >
+      A baseline pass verifies existing contracts; new coverage belongs to
+      subsequent slices.
+  - item: CI pipelines and deployment automation
+    disposition: deferred
+    reason: >
+      No commit or remote exists yet; CI is meaningless before a baseline is
+      accepted.
+  - item: Credential rotation or secret remediation outside candidate files
+    disposition: external-dependency
+    reason: >
+      Requires account ownership and operational coordination unavailable in
+      this workspace; any discovered live secret is reported, not rotated.
+
+constraints:
+  environment:
+    os: Windows (win32)
+    stack: Laragon, Laravel, PHP, Node
+    php_version: "8.3.36 (explicit, not ambient)"
+  execution_boundaries:
+    - No MySQL connections; PHPUnit must use SQLite :memory:.
+    - Inherited empty APP_KEY must not mask the local APP_KEY.
+    - No external AI requests and no Qdrant enablement.
+    - Original PRIME project and its databases must remain unmodified.
+    - No Git staging, commit, push or remote configuration.
+    - Approved databases are recorded, never created: development db_preventive_maintenance_ai, QA db_preventive_maintenance_ai_test; originals db_preventive_maintenance and db_preventive_maintenance_test stay protected.
+  documentation:
+    - README states actual behavior only; no fabricated Gemini capability.
+    - No secrets, internal operational data or personal motivation in docs.
+  quality:
+    - Changed PHP files pass syntax checks.
+    - Lockfiles remain byte-identical.
+    - AI and PM generator behavior unchanged.
+
+success_criteria:
+  E01:
+    observable: Preflight record shows repository, branch, index and config hashes; original PRIME path unchanged.
+  E02:
+    observable: No effective Qdrant collection default resolves to prime_knowledge; config loads without connecting.
+  E03:
+    observable: git check-ignore confirms secret, spool, dump, backup and OS patterns ignore the intended files and keep both env templates eligible.
+  E04:
+    observable: Default credential seeding cannot run silently in staging/production, or the required auth-policy decision is reported as a blocker.
+  E05:
+    observable: README exists describing the real project state and setup contract with no secrets.
+  E06:
+    observable: Every AI_ASSISTANT.md reference is accurate or intentionally preserved with a blocker note; favicon status is recorded as excluded or non-blocking issue.
+  E07:
+    observable: PHP syntax, focused tests and read-only sensitive-file screening produce recorded passing results with zero external connections.
+  final:
+    observable: >
+      Change list, per-path purpose, candidate inventory and remaining blockers
+      are reported, and readiness for independent review is stated as
+      HARDENED, PARTIAL or BLOCKED.
+
+references:
+  - brief: baseline hardening brief, 2026-11-02 (pre-first-commit execution brief)
+  - tracked_stories: e03s01, e24s02
+  - paths:
+      - config/qdrant.php
+      - database/seeders/DatabaseSeeder.php
+      - .gitignore
+      - .env.example
+      - .env.testing.example
+      - public/favicon.ico
+      - Docs/modules/AI_ASSISTANT.md
+      - README.md (to be created)
