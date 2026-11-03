@@ -1,16 +1,21 @@
 # PRIME Google — Status Proyek
 
 Dokumen ini adalah **status engineering terkini** (canonical) untuk PRIME Google.
-Dokumen ini menggambarkan kondisi yang berlaku sekarang, bukan riwayat
-perubahan. Riwayat berada di Git.
+Fakta source, status Git pada checkpoint tertanggal, hasil verifikasi historis,
+dan rencana implementasi dibedakan secara eksplisit.
 
 | Item | Nilai |
 |---|---|
 | Terakhir diperbarui | 2026-11-03 |
 | Baseline ter-commit | `cc5378ab19e46370e922aac5ff32c8f1cf4018a1` (`chore: establish initial PRIME Google baseline`, 2026-11-02) |
-| Branch saat ini | `chore/prime-google-agent-foundation` (satu commit; perubahan agent-foundation belum di-commit) |
-| Working tree saat ini | **tidak bersih** — `.gitignore` dan `README.md` termodifikasi; untracked: 35 file agent-foundation termasuk `AGENTS.md`, `Docs/PROJECT_STATE.md`, `config/boost.php`, serta 32 file di `.omp/skills/` |
-| Bukti status Git | `git status --porcelain=v1 --untracked-files=all` → dua tracked files modified; 35 untracked files; tidak ada yang di-stage |
+| Agent-foundation ter-commit | `e70c6eefc5316957ef51f5e8cc09c99245af53e0`; 35 file committed |
+| Branch pada checkpoint | `chore/prime-google-agent-foundation`, dipublikasikan ke `origin` |
+| Working tree pada checkpoint | Bersih saat HEAD `e70c6ee` diverifikasi (2026-11-03); ini observasi checkpoint, bukan klaim status permanen |
+| Remote | `origin` → `https://github.com/SumberMakmurRejeki/prime-chatbot.git` |
+| PR #1 | NOT VERIFIED pada pembaruan ini; GitHub CLI tidak terautentikasi |
+
+Checkpoint Git diverifikasi 2026-11-03 melalui `git status --porcelain=v1`,
+`git branch -a`, `git log`, `git remote -v`, dan `git ls-remote --heads origin`.
 
 Label bukti yang dipakai di dokumen ini:
 
@@ -23,20 +28,25 @@ Label bukti yang dipakai di dokumen ini:
 | NOT VERIFIED | Belum ada bukti; jangan dianggap benar. |
 | NOT IMPLEMENTED | Fitur/kapabilitas tidak ada di source saat ini. |
 
-## Status branch dan agent-foundation
+## Status branch dan agent-foundation pada checkpoint 2026-11-03
 
-Baseline commit tetap merupakan satu-satunya commit pada branch. Perubahan
-agent-foundation belum di-commit: `.gitignore` dan `README.md` termodifikasi;
-35 file untracked (`AGENTS.md`, `Docs/PROJECT_STATE.md`, `config/boost.php`, dan
-32 berkas di `.omp/skills/`). `.omp/mcp.json` adalah konfigurasi lokal yang
-diabaikan `.gitignore`, jadi bukan kandidat commit.
+Commit `e70c6eefc5316957ef51f5e8cc09c99245af53e0` berisi 35 file
+agent-foundation dan merupakan HEAD `chore/prime-google-agent-foundation` pada
+checkpoint 2026-11-03. Branch tersebut dipublikasikan di `origin`; `main`
+menunjuk baseline `cc5378ab19e46370e922aac5ff32c8f1cf4018a1`. Working tree
+terverifikasi bersih pada checkpoint tersebut; periksa Git untuk status
+terkini. Commit agent-foundation belum digabung ke `main` menurut data lokal;
+status PR #1 tidak dapat diperiksa karena GitHub CLI tidak terautentikasi.
+`.omp/mcp.json` adalah konfigurasi lokal yang diabaikan `.gitignore`, jadi bukan
+kandidat commit.
 
 | Komponen agent | Status saat diperiksa | Bukti |
 |---|---|---|
 | Laravel Boost MCP | SOURCE-VERIFIED — server dikonfigurasi lewat `.omp/mcp.json` (lokal, diabaikan Git); sesi OMP saat dokumen ini diperbarui mengekspos tepat tiga tool Boost: `application-info`, `get-absolute-url`, `search-docs` | `.omp/mcp.json`; daftar tool sesi |
 | Batas tool database / MCP | SOURCE-VERIFIED — 8 built-in tool Boost dikecualikan eksplisit (browser logs, database connections/query/schema, last error, log entries, record rule, Tinker); ini daftar pengecualian, bukan allowlist tiga tool | `config/boost.php` |
-| Laravel guidelines skill | SOURCE-VERIFIED — dipasang lokal | `.omp/skills/laravel-best-practices/SKILL.md` |
-| Testing skill | SOURCE-VERIFIED — dipasang lokal | `.omp/skills/testing-best-practices/SKILL.md` |
+| Laravel guidelines skill | SOURCE-VERIFIED — 20 file | `.omp/skills/laravel-best-practices/` (verifikasi hitung file) |
+| Testing skill | SOURCE-VERIFIED — 10 file | `.omp/skills/testing-best-practices/` (verifikasi hitung file) |
+| Total file skill | 30 file pada dua direktori di atas | Hitung file direktori |
 
 Tidak ada `.ai/rules/` di repository saat ini. Bagian `.ai/rules` dalam pedoman
 Boost hanya berlaku jika direktori/path terkait tersedia.
@@ -50,8 +60,11 @@ PRIME Google adalah aplikasi Laravel untuk domain *preventive maintenance*
 | Fakta | Status | Bukti |
 |---|---|---|
 | Repository Git independen | COMMITTED | `git rev-parse HEAD`, `git branch --show-current` |
-| Jumlah commit | 1 commit, `chore: establish initial PRIME Google baseline` (2026-11-02) | COMMITTED `git rev-list --count HEAD` |
-| Remote Git | Tidak ada remote terkonfigurasi | COMMITTED `git remote -v` (kosong) |
+| Baseline commit | `cc5378ab19e46370e922aac5ff32c8f1cf4018a1` (`chore: establish initial PRIME Google baseline`, 2026-11-02) | `git log` |
+| Agent-foundation commit | `e70c6eefc5316957ef51f5e8cc09c99245af53e0`, 35 file, HEAD branch saat checkpoint | `git log`, `git show --stat` |
+| Remote Git | `origin` → `https://github.com/SumberMakmurRejeki/prime-chatbot.git` | `git remote -v` |
+| Branch dipublikasikan | `chore/prime-google-agent-foundation` ada di `origin`; `main` masih di baseline | `git branch -a`, `git ls-remote --heads origin` |
+| Visibility remote | PRIVATE tidak diverifikasi pada checkpoint ini (kredensial `gh` tidak tersedia) | NOT VERIFIED |
 | Project asal (dilindungi) | `C:\laragon\www\Preventive_Maintenance`; tidak boleh dimodifikasi dari repository ini | `README.md` |
 
 Catatan baseline: PRIME Google diturunkan dari PRIME dan mempertahankan
@@ -209,8 +222,12 @@ Layanan eksternal:
 
 | Checkpoint | Status | Bukti |
 |---|---|---|
-| Baseline repo ditegakkan sebagai commit awal | COMMITTED | `cc5378a` (2026-11-02), branch `chore/prime-google-agent-foundation` |
+| Baseline repo ditegakkan sebagai commit awal | COMMITTED | `cc5378a` (2026-11-02) |
 | Baseline hardening (pra-commit pertama) tercatat sebagai scope inisiatif | DOCUMENTED | `specs/product/SCOPE_LATEST.yaml` |
+| Agent-foundation committed (35 file) | COMMITTED | `e70c6ee`, HEAD `chore/prime-google-agent-foundation` |
+| Branch dipublikasikan ke `origin` | COMMITTED pada checkpoint 2026-11-03 | `git ls-remote --heads origin` |
+| Working tree bersih | HISTORICAL — observasi saat HEAD `e70c6ee` (2026-11-03) diverifikasi; bukan status permanen | `git status --porcelain=v1` |
+| PR #1 | NOT VERIFIED — GitHub CLI tidak terautentikasi pada checkpoint | Tidak ada pernyataan open/merged |
 | Full PHPUnit | **HISTORICAL**: 989 PASS, 5.951 assertion | Tidak dijalankan ulang untuk dokumen ini |
 | `composer audit` | **HISTORICAL**: 0 advisory | Tidak dijalankan ulang |
 | `npm audit` | **HISTORICAL**: 0 vulnerability | Tidak dijalankan ulang |
@@ -224,9 +241,9 @@ HARDENED/PARTIAL/BLOCKED): NOT VERIFIED.
 
 ## 8. Keterbatasan dan pekerjaan terbuka
 
-1. **Perubahan agent-foundation belum di-commit.** Dua file termodifikasi
-   (`.gitignore`, `README.md`) dan 35 file untracked menunggu keputusan owner.
-   `.omp/mcp.json` tetap lokal (diabaikan Git).
+1. **Status PR #1 belum terverifikasi pada checkpoint ini** karena GitHub CLI
+   tidak terautentikasi. Jangan menyimpulkan PR terbuka atau sudah digabung
+   tanpa memeriksa metadata GitHub. `.omp/mcp.json` tetap lokal (diabaikan Git).
 2. **Gemini File Search belum ada** — belum ada implementasi, dokumentasi modul,
    maupun test. RAG masih Qdrant legacy.
 3. **Qdrant tidak boleh menjadi dependensi setup.** Tidak ada jaminan operasional
@@ -237,15 +254,14 @@ HARDENED/PARTIAL/BLOCKED): NOT VERIFIED.
    Tidak ada referensi runtime yang menunjuk ke path itu.
 5. **`public/favicon.ico` berukuran 0 byte** dan dikecualikan dari Git
    (`.gitignore:74-75`); tidak direferensikan aplikasi.
-6. **Belum ada remote Git** — backup dan kolaborasi belum tersedia.
-7. **Rute kandidat Dashboard Vue** masih dipertahankan sementara di
+6. **Rute kandidat Dashboard Vue** masih dipertahankan sementara di
    `routes/web.php` (permukaan bukti internal).
-8. **QA command `qa:provision-pm-scenario` membutuhkan akun `admin.prime` dan
+7. **QA command `qa:provision-pm-scenario` membutuhkan akun `admin.prime` dan
    `operator.prime` yang sudah aktif**; akun tidak dibuat otomatis.
-9. **Dokumentasi canonical lain belum ada**: `Docs/BUSINESS_RULES.md`,
+8. **Dokumentasi canonical lain belum ada**: `Docs/BUSINESS_RULES.md`,
    `Docs/ARCHITECTURE.md`, `Docs/OPERATIONS.md`, `Docs/modules/`. Isi dan status:
    NOT VERIFIED.
-10. **Skema `push_subscriptions` legacy** belum diputuskan untuk dihapus.
+9. **Skema `push_subscriptions` legacy** belum diputuskan untuk dihapus.
 
 ## 9. Prioritas pengembangan berikutnya
 
@@ -259,7 +275,8 @@ komitmen jadwal.
    Sampai itu selesai, Qdrant tetap berstatus legacy.
 3. Bersihkan sisa legacy: keputusan skema `push_subscriptions` dan rute kandidat
    Dashboard Vue.
-4. Siapkan remote Git privat dan alur review sebelum penambahan fitur besar.
+4. Tindak lanjuti review dan keputusan merge `chore/prime-google-agent-foundation`
+   (PR #1) sesuai arahan owner.
 
 Setiap perubahan kapabilitas wajib disertai bukti (source atau test) sebelum
 statusnya dinaikkan di dokumen ini.
@@ -287,7 +304,9 @@ statusnya dinaikkan di dokumen ini.
 ### Kebijakan pembaruan
 
 - Perbarui dokumen ini bila kapabilitas, baseline Git, konfigurasi isolasi, atau
-  status AI berubah.
+  status AI berubah. Catat status Git sebagai observasi checkpoint tertanggal
+  (`git status`, `git log`, `git remote -v`, `git ls-remote`); jangan menuliskan
+  status working tree sebagai keadaan permanen.
 - Jangan menyalin dokumentasi PRIME/Qdrant. Rujuk source di repository ini.
 - Jangan menulis secret, data database, atau konteks personal.
 - Hasil verifikasi lama tetap berlabel HISTORICAL sampai dijalankan ulang.
