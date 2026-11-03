@@ -63,13 +63,22 @@ yarn-error.log
 /.codex/
 /.factory/
 /.grok/
-/.omp/
 /.pi/
-/AGENTS.md
 /boost.json
 /.mcp.json
 /CLAUDE.md
 /opencode.json
+
+# Approved shareable agent guidance: AGENTS.md is tracked on purpose and is
+# deliberately absent from the ignore list above.
+
+# Only the two approved Laravel Boost skills are shared. Everything else
+# under .omp/ (mcp.json, sessions, caches, logs) stays local.
+/.omp/*
+!/.omp/skills/
+/.omp/skills/*
+!/.omp/skills/laravel-best-practices/
+!/.omp/skills/testing-best-practices/
 
 # Unused zero-byte favicon placeholder; not referenced by the application.
 /public/favicon.ico

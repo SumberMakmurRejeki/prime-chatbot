@@ -14,10 +14,11 @@ its databases are separate and must not be modified from here.
 |---|---|
 | Project | PRIME Google |
 | Local path | `C:\laragon\www\prime-google` |
-| Repository | Independent Git repository with no commits yet; no remote configured |
+| Repository | Independent Git repository; baseline commit `cc5378ab19e46370e922aac5ff32c8f1cf4018a1`; no remote configured |
 
-No Git remote exists yet and the private remote has not been created. Do not add
-or invent a clone URL; remote configuration is the owner's decision.
+The baseline commit is local. No Git remote exists yet and the private remote has
+not been created. Do not add or invent a clone URL; remote configuration is the
+owner's decision.
 
 ## Current capabilities
 
