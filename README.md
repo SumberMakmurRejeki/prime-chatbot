@@ -14,10 +14,13 @@ its databases are separate and must not be modified from here.
 |---|---|
 | Project | PRIME Google |
 | Local path | `C:\laragon\www\prime-google` |
-| Repository | Independent Git repository with no commits yet; no remote configured |
+| Repository | `SumberMakmurRejeki/prime-chatbot` (GitHub remote `origin`) |
 
-No Git remote exists yet and the private remote has not been created. Do not add
-or invent a clone URL; remote configuration is the owner's decision.
+The initial baseline commit and the agent-foundation commit are both present in
+this repository's history, and the current branch is published to `origin`.
+The agent-foundation commit contains 35 files. Run `git status` for the current
+working-tree state; historical status observations do not describe later
+changes.
 
 ## Current capabilities
 
