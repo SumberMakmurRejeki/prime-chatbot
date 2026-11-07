@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\AI\StoreKnowledgeDocumentRequest;
 use App\Jobs\ProcessKnowledgeDocument;
 use App\Models\KnowledgeDocument;
+use App\Services\AI\GeminiDocumentIndexingService;
 use App\Services\AI\KnowledgeDocumentService;
 use DomainException;
 use Illuminate\Http\JsonResponse;
@@ -52,8 +53,11 @@ class KnowledgeDocumentController extends Controller
         ]);
     }
 
-    public function store(StoreKnowledgeDocumentRequest $request, KnowledgeDocumentService $documents): RedirectResponse
-    {
+    public function store(
+        StoreKnowledgeDocumentRequest $request,
+        KnowledgeDocumentService $documents,
+        GeminiDocumentIndexingService $geminiIndexing,
+    ): RedirectResponse {
         $validated = $request->validated();
         $file = $request->file('document');
         $documentCode = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
@@ -61,6 +65,9 @@ class KnowledgeDocumentController extends Controller
 
         $document = $documents->store($file, mb_substr($documentCode, 0, 64), $validated['title'], $validated['version'], (int) $request->user()->id);
         ProcessKnowledgeDocument::dispatch($document->id)->afterCommit();
+
+        // Jalur Gemini bersifat opt-in; saat nonaktif alur upload legacy tetap sama.
+        $geminiIndexing->schedule($document);
 
         return redirect()->route('knowledge-documents.index')->with('flash_success', 'Dokumen berhasil diunggah dan masuk antrean pemrosesan.');
     }
@@ -76,10 +83,15 @@ class KnowledgeDocumentController extends Controller
         return redirect()->route('knowledge-documents.index')->with('flash_success', 'Dokumen siap dan telah dipublikasikan.');
     }
 
-    public function retry(KnowledgeDocument $knowledgeDocument, KnowledgeDocumentService $documents): RedirectResponse
-    {
+    public function retry(
+        KnowledgeDocument $knowledgeDocument,
+        KnowledgeDocumentService $documents,
+        GeminiDocumentIndexingService $geminiIndexing,
+    ): RedirectResponse {
         try {
-            $documents->retry($knowledgeDocument->id);
+            // Model hasil retry dipakai supaya snapshot identitas pada baris
+            // indeksasi berasal dari state registry terbaru.
+            $geminiIndexing->schedule($documents->retry($knowledgeDocument->id));
         } catch (DomainException $exception) {
             return redirect()->route('knowledge-documents.index')->with('flash_error', $exception->getMessage());
         }
