@@ -16,6 +16,7 @@ use App\Services\AI\GeminiIndexingContinuation;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Queue\MaxAttemptsExceededException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -44,6 +45,8 @@ class GeminiDocumentIndexingTest extends TestCase
     private const UPLOAD_URL = 'https://generativelanguage.googleapis.com/upload/v1beta';
 
     private const STORE = 'fileSearchStores/store-prime-dev';
+
+    private const STORE_URL = self::BASE_URL.'/fileSearchStores/store-prime-dev';
 
     private const IMPORT_URL = self::BASE_URL.'/fileSearchStores/store-prime-dev:importFile';
 
@@ -165,6 +168,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $index = $this->schedule($document);
         Http::preventStrayRequests();
         Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
             self::UPLOAD_URL.'/files' => Http::response(['file' => ['name' => 'files/prime-file-1']]),
             self::IMPORT_URL => Http::response([
                 'name' => self::STORE.'/operations/import-1',
@@ -189,7 +193,10 @@ class GeminiDocumentIndexingTest extends TestCase
                 ['key' => 'document_code', 'stringValue' => $document->document_code],
                 ['key' => 'version', 'stringValue' => '2.0'],
             ]);
-        Http::assertSentCount(2);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
+            && $request->url() === self::STORE_URL
+            && $request->header('x-goog-api-key') === [self::CREDENTIAL]);
+        Http::assertSentCount(4);
     }
 
     public function test_completed_import_records_verified_identity_without_publishing(): void
@@ -200,6 +207,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $index = $this->schedule($document);
         Http::preventStrayRequests();
         Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
             self::UPLOAD_URL.'/files' => Http::response(['file' => ['name' => 'files/prime-file-2']]),
             self::IMPORT_URL => Http::response([
                 'name' => self::STORE.'/operations/import-2',
@@ -218,7 +226,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $this->assertFalse($document->is_published);
         $this->assertNull($document->published_at);
         $this->assertSame('ready', $document->status);
-        Http::assertSentCount(2);
+        Http::assertSentCount(4);
     }
 
     public function test_remote_pending_operation_completes_only_after_verified_status_check(): void
@@ -230,6 +238,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $index = $this->schedule($document);
         Http::preventStrayRequests();
         Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
             self::UPLOAD_URL.'/files' => Http::response(['file' => ['name' => 'files/prime-file-3']]),
             self::IMPORT_URL => Http::response(['name' => self::STORE.'/operations/import-3', 'done' => false]),
         ]);
@@ -261,6 +270,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $index = $this->schedule($document);
         Http::preventStrayRequests();
         Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
             self::UPLOAD_URL.'/files' => Http::response(['file' => ['name' => 'files/prime-file-4']]),
             self::IMPORT_URL => Http::response(['name' => self::STORE.'/operations/import-4', 'done' => false]),
         ]);
@@ -292,6 +302,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $index = $this->schedule($document);
         Http::preventStrayRequests();
         Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
             self::UPLOAD_URL.'/files' => Http::response(['file' => ['name' => 'files/prime-file-5']]),
             self::IMPORT_URL => Http::response(['name' => ['invalid'], 'fictional-secret' => 'detail internal']),
         ]);
@@ -306,7 +317,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $service->process($index->id, $index->generation);
 
         $this->assertSame(GeminiDocumentIndexState::Unknown, $index->fresh()->state);
-        Http::assertSentCount(2);
+        Http::assertSentCount(4);
     }
 
     public function test_document_identity_from_another_store_is_never_completed(): void
@@ -317,6 +328,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $index = $this->schedule($document);
         Http::preventStrayRequests();
         Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
             self::UPLOAD_URL.'/files' => Http::response(['file' => ['name' => 'files/prime-file-6']]),
             self::IMPORT_URL => Http::response([
                 'name' => self::STORE.'/operations/import-6',
@@ -342,7 +354,10 @@ class GeminiDocumentIndexingTest extends TestCase
         $service = app(GeminiDocumentIndexingService::class);
         $index = $this->schedule($document);
         Http::preventStrayRequests();
-        Http::fake([self::UPLOAD_URL.'/files' => Http::failedConnection()]);
+        Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
+            self::UPLOAD_URL.'/files' => Http::failedConnection(),
+        ]);
 
         $service->process($index->id, $index->generation);
 
@@ -350,14 +365,14 @@ class GeminiDocumentIndexingTest extends TestCase
         $this->assertSame(GeminiDocumentIndexState::Unknown, $index->state);
         $this->assertSame('upload_outcome_unknown', $index->safe_error_code);
         $this->assertNull($index->google_file_id);
-        Http::assertSentCount(1);
+        Http::assertSentCount(2);
 
         // Fake baru agar yang diperiksa hanya hasil pemanggilan schedule kedua.
         Queue::fake([IndexKnowledgeDocumentInGemini::class]);
         $service->schedule($document);
         Queue::assertNothingPushed();
         $this->assertSame(GeminiDocumentIndexState::Unknown, $index->fresh()->state);
-        Http::assertSentCount(1);
+        Http::assertSentCount(2);
     }
 
     public function test_pending_operation_resumes_by_status_check_only(): void
@@ -404,10 +419,13 @@ class GeminiDocumentIndexingTest extends TestCase
 
         $this->activateGeminiRevision();
         Http::preventStrayRequests();
-        Http::fake([self::IMPORT_URL => Http::response([
-            'name' => self::STORE.'/operations/import-8',
-            'done' => false,
-        ])]);
+        Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
+            self::IMPORT_URL => Http::response([
+                'name' => self::STORE.'/operations/import-8',
+                'done' => false,
+            ]),
+        ]);
 
         $this->schedule($document);
 
@@ -427,6 +445,306 @@ class GeminiDocumentIndexingTest extends TestCase
         Http::assertNotSent(fn (Request $request): bool => $request->url() === self::UPLOAD_URL.'/files');
     }
 
+    public function test_store_access_denied_blocks_upload_and_preserves_completed_index(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $historicDocument = $this->document();
+        KnowledgeDocumentGeminiIndex::query()->create([
+            'knowledge_document_id' => $historicDocument->id,
+            'document_code' => $historicDocument->document_code,
+            'document_version' => $historicDocument->version,
+            'document_checksum' => $historicDocument->checksum,
+            'store_id' => self::STORE,
+            'google_file_id' => 'files/historic-1',
+            'operation_name' => self::STORE.'/operations/historic-1',
+            'google_document_name' => self::STORE.'/documents/historic-1',
+            'state' => 'completed',
+            'generation' => 1,
+        ]);
+        $index = $this->schedule($this->document());
+        Http::preventStrayRequests();
+        Http::fake([self::STORE_URL => Http::response(['error' => ['message' => 'detail provider rahasia']], 403)]);
+
+        $continuation = $this->process($index, $index->generation);
+
+        $index->refresh();
+        $this->assertSame(GeminiIndexingContinuation::Settled, $continuation);
+        $this->assertSame(GeminiDocumentIndexState::Failed, $index->state);
+        $this->assertSame('access_denied', $index->safe_error_code);
+        $this->assertStringNotContainsString('rahasia', (string) $index->safe_error_message);
+        $this->assertNull($index->google_file_id);
+        Http::assertNotSent(fn (Request $request): bool => $request->method() !== 'GET');
+        Http::assertSentCount(1);
+
+        $historic = KnowledgeDocumentGeminiIndex::query()
+            ->where('knowledge_document_id', $historicDocument->id)
+            ->sole();
+        $this->assertSame(GeminiDocumentIndexState::Completed, $historic->state);
+        $this->assertSame(self::STORE.'/documents/historic-1', $historic->google_document_name);
+    }
+
+    public function test_missing_store_blocks_upload_without_creating_a_store(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        Http::preventStrayRequests();
+        Http::fake([self::STORE_URL => Http::response(['error' => ['message' => 'not found']], 404)]);
+
+        $this->process($index, $index->generation);
+
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Failed, $index->state);
+        $this->assertSame('store_not_found', $index->safe_error_code);
+        $this->assertNull($index->google_file_id);
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
+            && $request->url() === self::STORE_URL);
+    }
+
+    public function test_store_identity_mismatch_is_never_false_readiness(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        Http::preventStrayRequests();
+        Http::fake([self::STORE_URL => Http::response(['name' => 'fileSearchStores/other-store'])]);
+
+        $this->process($index, $index->generation);
+
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Failed, $index->state);
+        $this->assertSame('provider_response_invalid', $index->safe_error_code);
+        $this->assertNull($index->google_file_id);
+        $this->assertNull($index->google_document_name);
+        Http::assertSentCount(1);
+    }
+
+    public function test_missing_chat_credential_blocks_upload_without_any_request(): void
+    {
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        Http::preventStrayRequests();
+        Http::fake();
+
+        $this->process($index, $index->generation);
+
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Failed, $index->state);
+        $this->assertSame('credential_not_configured', $index->safe_error_code);
+        Http::assertNothingSent();
+    }
+
+    public function test_temporary_store_failure_keeps_row_resumable_without_upload(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        Http::preventStrayRequests();
+        Http::fake([
+            self::STORE_URL => Http::sequence()
+                ->push(['error' => ['message' => 'overloaded']], 503)
+                ->push(['name' => self::STORE])
+                ->push(['name' => self::STORE]),
+            self::UPLOAD_URL.'/files' => Http::response(['file' => ['name' => 'files/prime-file-9']]),
+            self::IMPORT_URL => Http::response(['name' => self::STORE.'/operations/import-9', 'done' => false]),
+        ]);
+
+        $continuation = $this->process($index, $index->generation);
+
+        $this->assertSame(GeminiIndexingContinuation::RetryStatusRead, $continuation);
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Queued, $index->state);
+        $this->assertNotNull($index->last_checked_at);
+        $this->assertNull($index->google_file_id);
+        $this->assertSame('provider_unavailable', $index->safe_error_code);
+        $this->assertSame('Akses store Gemini File Search sedang tidak tersedia; belum ada unggahan yang terkirim.', $index->safe_error_message);
+        Http::assertSentCount(1);
+
+        $continuation = app(GeminiDocumentIndexingService::class)->process($index->id, $index->generation);
+
+        $this->assertSame(GeminiIndexingContinuation::AwaitRemoteCompletion, $continuation);
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Pending, $index->state);
+        $this->assertSame('files/prime-file-9', $index->google_file_id);
+        Http::assertSentCount(5);
+    }
+
+    public function test_store_changed_after_scheduling_blocks_every_google_request(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        config(['gemini_file_search.indexing.store' => 'store-other-dev']);
+        Http::preventStrayRequests();
+        Http::fake();
+
+        $this->process($index, $index->generation);
+
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Failed, $index->state);
+        $this->assertSame('store_changed', $index->safe_error_code);
+        Http::assertNothingSent();
+    }
+
+    public function test_denied_store_on_uploaded_row_preserves_file_identity_without_reupload(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update([
+            'state' => 'uploaded',
+            'google_file_id' => 'files/prime-file-10',
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([self::STORE_URL => Http::response(['error' => ['message' => 'denied']], 403)]);
+
+        $continuation = app(GeminiDocumentIndexingService::class)->process($index->id, $index->generation);
+
+        $this->assertSame(GeminiIndexingContinuation::Settled, $continuation);
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Failed, $index->state);
+        $this->assertSame('access_denied', $index->safe_error_code);
+        $this->assertSame('files/prime-file-10', $index->google_file_id);
+        Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
+        Http::assertSentCount(1);
+    }
+
+    public function test_failed_queued_job_marks_index_terminally_failed(): void
+    {
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        $job = new IndexKnowledgeDocumentInGemini($index->id, $index->generation);
+
+        $job->failed(new MaxAttemptsExceededException('Attempts exhausted.'));
+
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Failed, $index->state);
+        $this->assertSame('indexing_attempts_exhausted', $index->safe_error_code);
+        $this->assertSame('Pemrosesan dokumen berhenti setelah beberapa percobaan. Periksa koneksi AI, lalu coba lagi.', $index->safe_error_message);
+        $this->assertNull($index->google_file_id);
+    }
+
+    public function test_failed_uploaded_job_preserves_google_file_identity_and_can_resume_import(): void
+    {
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update([
+            'state' => GeminiDocumentIndexState::Uploaded->value,
+            'google_file_id' => 'files/prime-file-exhausted',
+        ]);
+        $job = new IndexKnowledgeDocumentInGemini($index->id, $index->generation);
+
+        $job->failed(new MaxAttemptsExceededException('Attempts exhausted.'));
+
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Failed, $index->state);
+        $this->assertSame('indexing_attempts_exhausted', $index->safe_error_code);
+        $this->assertSame('Pemrosesan dokumen berhenti setelah beberapa percobaan. Berkas sudah diunggah; periksa koneksi AI, lalu coba lagi.', $index->safe_error_message);
+        $this->assertSame('files/prime-file-exhausted', $index->google_file_id);
+        $this->assertSame(self::STORE, $index->store_id);
+
+        $this->activateGeminiRevision();
+        Http::preventStrayRequests();
+        Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
+            self::IMPORT_URL => Http::response(['name' => self::STORE.'/operations/import-recovered', 'done' => false]),
+        ]);
+        Queue::fake([IndexKnowledgeDocumentInGemini::class]);
+
+        $this->schedule($index->knowledgeDocument()->firstOrFail());
+        $index->refresh();
+        app(GeminiDocumentIndexingService::class)->process($index->id, $index->generation);
+
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Pending, $index->state);
+        $this->assertSame('files/prime-file-exhausted', $index->google_file_id);
+        $this->assertSame(self::STORE.'/operations/import-recovered', $index->operation_name);
+        $this->assertSame(2, $index->generation);
+        Http::assertNotSent(fn (Request $request): bool => $request->url() === self::UPLOAD_URL.'/files');
+        Http::assertSentCount(2);
+    }
+
+    public function test_retry_exhaustion_preserves_pending_completed_uncertain_and_stale_records(): void
+    {
+        $this->configureIndexing();
+        Http::preventStrayRequests();
+        $document = $this->document();
+        $index = $this->schedule($document);
+
+        foreach ([
+            [GeminiDocumentIndexState::Pending, 1, 'files/prime-pending', self::STORE.'/operations/pending'],
+            [GeminiDocumentIndexState::Completed, 1, 'files/prime-completed', self::STORE.'/operations/completed'],
+            [GeminiDocumentIndexState::Unknown, 1, null, self::STORE.'/operations/unknown'],
+            [GeminiDocumentIndexState::Uploading, 1, null, null],
+            [GeminiDocumentIndexState::Importing, 1, 'files/prime-importing', null],
+            [GeminiDocumentIndexState::Queued, 2, null, null],
+        ] as [$state, $generation, $fileId, $operationName]) {
+            KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update([
+                'state' => $state->value,
+                'generation' => $generation,
+                'google_file_id' => $fileId,
+                'operation_name' => $operationName,
+                'safe_error_code' => null,
+                'safe_error_message' => null,
+            ]);
+            $failedGeneration = $generation === 2 ? 1 : $generation;
+            (new IndexKnowledgeDocumentInGemini($index->id, $failedGeneration))->failed(new MaxAttemptsExceededException('Attempts exhausted.'));
+            $afterExhaustion = $index->fresh();
+
+            if ($generation === 2) {
+                $this->assertSame(GeminiDocumentIndexState::Queued, $afterExhaustion->state);
+                $this->assertNull($afterExhaustion->safe_error_code);
+
+                continue;
+            }
+
+            if ($state === GeminiDocumentIndexState::Pending) {
+                $this->assertSame(GeminiDocumentIndexState::Pending, $afterExhaustion->state);
+                $this->assertSame('status_check_exhausted', $afterExhaustion->safe_error_code);
+                $this->assertSame($operationName, $afterExhaustion->operation_name);
+
+                continue;
+            }
+
+            $this->assertSame($state, $afterExhaustion->state);
+            $this->assertSame($fileId, $afterExhaustion->google_file_id);
+            $this->assertSame($operationName, $afterExhaustion->operation_name);
+            $this->assertNull($afterExhaustion->safe_error_code);
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_credential_changed_after_scheduling_still_indexes_only_the_snapshotted_store(): void
+    {
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        // Admin mengganti kredensial chat setelah job masuk antrean: worker
+        // memakai kredensial aktif saat eksekusi, tetapi tetap terikat pada
+        // store yang disnapshot dan tidak pernah menulis ke store lain.
+        $this->activateGeminiRevision('fictional-rotated-gemini-key');
+        Http::preventStrayRequests();
+        Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
+            self::UPLOAD_URL.'/files' => Http::response(['file' => ['name' => 'files/prime-file-11']]),
+            self::IMPORT_URL => Http::response(['name' => self::STORE.'/operations/import-11', 'done' => false]),
+        ]);
+
+        $this->process($index, $index->generation);
+
+        $index->refresh();
+        $this->assertSame(GeminiDocumentIndexState::Pending, $index->state);
+        $this->assertSame(self::STORE, $index->store_id);
+        $this->assertSame(self::STORE.'/operations/import-11', $index->operation_name);
+        Http::assertSent(fn (Request $request): bool => $request->url() === self::STORE_URL
+            && $request->header('x-goog-api-key') === ['fictional-rotated-gemini-key']);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+            && $request->header('x-goog-api-key') === ['fictional-rotated-gemini-key']);
+        Http::assertSentCount(4);
+    }
+
     public function test_job_from_previous_generation_is_ignored(): void
     {
         $this->configureIndexing();
@@ -441,6 +759,196 @@ class GeminiDocumentIndexingTest extends TestCase
         $this->assertSame(GeminiIndexingContinuation::Settled, $continuation);
         $this->assertSame(GeminiDocumentIndexState::Queued, $index->fresh()->state);
         Http::assertNothingSent();
+    }
+
+    public function test_upload_claim_is_refused_when_generation_changes_during_readiness_check(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        Http::preventStrayRequests();
+        Http::fake([
+            self::STORE_URL => function () use ($index) {
+                // Simulasi deterministik tanpa worker kedua: generation baru
+                // dimulai tepat saat pemeriksaan akses store generation lama
+                // masih berjalan, dan state barunya sama-sama `queued`.
+                KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update([
+                    'generation' => 2,
+                    'state' => GeminiDocumentIndexState::Queued->value,
+                ]);
+
+                return Http::response(['name' => self::STORE]);
+            },
+        ]);
+
+        $continuation = $this->process($index, $index->generation);
+
+        $this->assertSame(GeminiIndexingContinuation::Settled, $continuation);
+        $newer = $index->fresh();
+        $this->assertSame(2, $newer->generation);
+        $this->assertSame(GeminiDocumentIndexState::Queued, $newer->state);
+        $this->assertNull($newer->google_file_id);
+        $this->assertNull($newer->safe_error_code);
+        Http::assertNotSent(fn (Request $request): bool => $request->url() === self::UPLOAD_URL.'/files');
+        Http::assertSentCount(1);
+    }
+
+    public function test_import_claim_is_refused_when_generation_changes_during_readiness_check(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update([
+            'state' => GeminiDocumentIndexState::Uploaded->value,
+            'google_file_id' => 'files/prime-stale-static',
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            self::STORE_URL => function () use ($index) {
+                // Restart mempertahankan identitas berkas, sehingga state
+                // generation baru juga `uploaded` dan job lama tidak boleh
+                // mengimpor atas namanya.
+                KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update([
+                    'generation' => 2,
+                    'state' => GeminiDocumentIndexState::Uploaded->value,
+                ]);
+
+                return Http::response(['name' => self::STORE]);
+            },
+        ]);
+
+        $continuation = $this->process($index, $index->generation);
+
+        $this->assertSame(GeminiIndexingContinuation::Settled, $continuation);
+        $newer = $index->fresh();
+        $this->assertSame(2, $newer->generation);
+        $this->assertSame(GeminiDocumentIndexState::Uploaded, $newer->state);
+        $this->assertSame('files/prime-stale-static', $newer->google_file_id);
+        $this->assertNull($newer->operation_name);
+        $this->assertNull($newer->safe_error_code);
+        Http::assertNotSent(fn (Request $request): bool => $request->url() === self::IMPORT_URL);
+        Http::assertSentCount(1);
+    }
+
+    public function test_uncertain_upload_after_generation_change_cannot_mark_newer_generation_unknown(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        Http::preventStrayRequests();
+        Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
+            self::UPLOAD_URL.'/files' => function () use ($index) {
+                // Generation berubah setelah klaim `uploading`; state klaim
+                // dipertahankan agar hanya syarat generation yang menahan
+                // penulisan hasil unggahan oleh job lama.
+                KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update(['generation' => 2]);
+
+                return Http::failedConnection();
+            },
+        ]);
+
+        $this->process($index, $index->generation);
+
+        $newer = $index->fresh();
+        $this->assertSame(2, $newer->generation);
+        $this->assertSame(GeminiDocumentIndexState::Uploading, $newer->state);
+        $this->assertNull($newer->google_file_id);
+        $this->assertNull($newer->safe_error_code);
+        Http::assertSentCount(2);
+    }
+
+    public function test_upload_result_after_generation_change_is_not_recorded_on_newer_generation(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        Http::preventStrayRequests();
+        Http::fake([
+            self::STORE_URL => Http::response(['name' => self::STORE]),
+            self::UPLOAD_URL.'/files' => function () use ($index) {
+                KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update(['generation' => 2]);
+
+                return Http::response(['file' => ['name' => 'files/prime-stale-flight']]);
+            },
+        ]);
+
+        $continuation = $this->process($index, $index->generation);
+
+        $this->assertSame(GeminiIndexingContinuation::Settled, $continuation);
+        $newer = $index->fresh();
+        $this->assertSame(2, $newer->generation);
+        $this->assertSame(GeminiDocumentIndexState::Uploading, $newer->state);
+        $this->assertNull($newer->google_file_id);
+        $this->assertNull($newer->operation_name);
+        $this->assertNull($newer->safe_error_code);
+        Http::assertNotSent(fn (Request $request): bool => $request->url() === self::IMPORT_URL);
+        Http::assertSentCount(2);
+    }
+
+    public function test_inspection_failure_after_generation_change_cannot_fail_newer_generation(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update([
+            'state' => GeminiDocumentIndexState::Pending->value,
+            'operation_name' => self::STORE.'/operations/import-stale-fail',
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            $this->operationUrl('import-stale-fail') => function () use ($index) {
+                KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update(['generation' => 2]);
+
+                return Http::response([
+                    'name' => self::STORE.'/operations/import-stale-fail',
+                    'done' => true,
+                    'error' => ['message' => 'gagal di sisi provider'],
+                ]);
+            },
+        ]);
+
+        $continuation = $this->process($index, $index->generation);
+
+        $this->assertSame(GeminiIndexingContinuation::Settled, $continuation);
+        $newer = $index->fresh();
+        $this->assertSame(2, $newer->generation);
+        $this->assertSame(GeminiDocumentIndexState::Pending, $newer->state);
+        $this->assertNull($newer->safe_error_code);
+        $this->assertNull($newer->safe_error_message);
+        Http::assertSentCount(1);
+    }
+
+    public function test_inspection_completion_after_generation_change_cannot_complete_newer_generation(): void
+    {
+        $this->activateGeminiRevision();
+        $this->configureIndexing();
+        $index = $this->schedule($this->document());
+        KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update([
+            'state' => GeminiDocumentIndexState::Pending->value,
+            'operation_name' => self::STORE.'/operations/import-stale-complete',
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            $this->operationUrl('import-stale-complete') => function () use ($index) {
+                KnowledgeDocumentGeminiIndex::query()->whereKey($index->id)->update(['generation' => 2]);
+
+                return Http::response([
+                    'name' => self::STORE.'/operations/import-stale-complete',
+                    'done' => true,
+                    'response' => ['documentName' => self::STORE.'/documents/doc-stale'],
+                ]);
+            },
+        ]);
+
+        $continuation = $this->process($index, $index->generation);
+
+        $this->assertSame(GeminiIndexingContinuation::Settled, $continuation);
+        $newer = $index->fresh();
+        $this->assertSame(2, $newer->generation);
+        $this->assertSame(GeminiDocumentIndexState::Pending, $newer->state);
+        $this->assertNull($newer->google_document_name);
+        Http::assertSentCount(1);
     }
 
     public function test_changed_document_version_marks_index_failed_without_remote_calls(): void
@@ -550,7 +1058,7 @@ class GeminiDocumentIndexingTest extends TestCase
         return app(GeminiDocumentIndexingService::class)->process($index->id, $generation);
     }
 
-    private function activateGeminiRevision(): AiProviderConfigurationRevision
+    private function activateGeminiRevision(string $credential = self::CREDENTIAL): AiProviderConfigurationRevision
     {
         $configuration = AiProviderConfiguration::query()->create([
             'display_name' => 'Fictional Gemini',
@@ -559,7 +1067,7 @@ class GeminiDocumentIndexingTest extends TestCase
         $revision = $configuration->revisions()->make([
             'driver' => 'gemini',
             'model_id' => 'gemini-3.8-flash',
-            'credential' => self::CREDENTIAL,
+            'credential' => $credential,
             'enabled' => true,
         ])->forceFill([
             'revision_number' => 1,

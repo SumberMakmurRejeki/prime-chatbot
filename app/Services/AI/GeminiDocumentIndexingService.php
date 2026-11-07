@@ -20,6 +20,9 @@ use Throwable;
  * Aturan yang dijaga class ini:
  * - Identitas yang dipercaya adalah snapshot registry (kode, versi, checksum)
  *   saat penjadwalan; metadata dan kredensial provider tidak pernah jadi bukti.
+ * - Setiap permintaan tulis Google baru (unggah/impor) didahului pemeriksaan
+ *   akses store read-only; store yang tidak accessible tidak pernah menerima
+ *   unggahan, dan kegagalan akses dicatat tanpa mengubah publikasi dokumen.
  * - Operasi non-idempoten (unggah, impor) tidak pernah diulang otomatis bila
  *   hasilnya tidak pasti; baris masuk `unknown` dan menunggu keputusan operator.
  * - Kesiapan teknis indeks bukan otorisasi publikasi; tidak ada dokumen yang
@@ -95,8 +98,8 @@ final class GeminiDocumentIndexingService
     /**
      * Jalankan satu tahap indeksasi; hanya dipanggil dari job antrean.
      *
-     * Setiap transisi state bersyarat pada state tercatat, sehingga dua worker
-     * tidak pernah mengerjakan tahap yang sama secara bersamaan.
+     * Setiap transisi bersyarat pada state dan generation yang tercatat,
+     * sehingga job lama tidak menginjak tahap milik job baru.
      */
     public function process(int $indexId, int $generation): GeminiIndexingContinuation
     {
@@ -157,6 +160,115 @@ final class GeminiDocumentIndexingService
             ]);
     }
 
+    /**
+     * Titik akhir job antrean setelah semua percobaan habis.
+     *
+     * `pending` memakai perilaku lama: pemeriksaan status adalah GET idempoten,
+     * jadi baris tetap `pending` dengan kode `status_check_exhausted` dan dapat
+     * dilanjutkan tanpa unggah ulang. Baris `queued`/`uploaded` yang habis
+     * percobaan berarti satu-satunya kegagalan adalah gerbang akses store
+     * (RetryStatusRead) sebelum permintaan tulis dikirim, sehingga baris itu
+     * bukan pekerjaan yang masih berjalan dan harus difinalisasi gagal pasti.
+     * Hasil tulis yang tidak pasti (`uploading`, `importing`, `unknown`) serta
+     * baris yang sudah tuntas sengaja tidak disentuh.
+     */
+    public function markRetriesExhausted(int $indexId, int $generation): void
+    {
+        $this->markStatusChecksExhausted($indexId, $generation);
+        $this->finalizeExhaustedAttempt($indexId, $generation, GeminiDocumentIndexState::Queued);
+        $this->finalizeExhaustedAttempt($indexId, $generation, GeminiDocumentIndexState::Uploaded);
+    }
+
+    /**
+     * Finalisasi baris `queued`/`uploaded` yang percobaannya habis tanpa satu
+     * pun permintaan tulis baru. Identitas Google (file_id, operation_name)
+     * dibiarkan apa adanya agar restart memakai berkas yang sama.
+     */
+    private function finalizeExhaustedAttempt(int $indexId, int $generation, GeminiDocumentIndexState $from): void
+    {
+        $uploaded = $from === GeminiDocumentIndexState::Uploaded;
+
+        KnowledgeDocumentGeminiIndex::query()
+            ->whereKey($indexId)
+            ->where('generation', $generation)
+            ->where('state', $from->value)
+            ->update([
+                'state' => GeminiDocumentIndexState::Failed->value,
+                'safe_error_code' => 'indexing_attempts_exhausted',
+                'safe_error_message' => $uploaded
+                    ? 'Pemrosesan dokumen berhenti setelah beberapa percobaan. Berkas sudah diunggah; periksa koneksi AI, lalu coba lagi.'
+                    : 'Pemrosesan dokumen berhenti setelah beberapa percobaan. Periksa koneksi AI, lalu coba lagi.',
+                'last_checked_at' => now(),
+                'updated_at' => now(),
+            ]);
+    }
+
+    /**
+     * Gerbang sebelum satu permintaan tulis Google: hanya store `accessible`
+     * dengan identitas yang cocok yang boleh melanjutkan.
+     *
+     * NULL berarti boleh lanjut. `$expectedState` adalah state baris yang
+     * menjadi syarat transisi bersyarat di pemanggil, sehingga hasil gerbang
+     * tidak pernah menimpa state yang berubah di tengah jalan.
+     *
+     * Pemetaan kegagalan mengikuti kontrak T1: gangguan sementara tetap dapat
+     * diulang lewat antrean, sedangkan kredensial atau store yang salah adalah
+     * kegagalan pasti tanpa permintaan tulis. Pemeriksaan memakai kredensial
+     * revisi chat aktif yang sama dengan operasi berikutnya, dan store yang
+     * diminta adalah snapshot `store_id` baris ini.
+     */
+    private function storeAccessBlocker(KnowledgeDocumentGeminiIndex $index, GeminiDocumentIndexState $expectedState): ?GeminiIndexingContinuation
+    {
+        $readiness = $this->operations->checkStoreReadiness();
+
+        if ($readiness->accessible()) {
+            return null;
+        }
+
+        if ($readiness->state === GeminiStoreReadinessState::Unavailable) {
+            // 429/5xx atau gangguan transport: belum ada permintaan tulis yang
+            // terkirim, jadi baris tetap pada state-nya dan job dicoba lagi
+            // sampai batas percobaan. Batas tersebut tidak memindahkan state:
+            // baris tetap aman dijadwalkan ulang dan gerbang ini jalan lagi
+            // sebelum ada unggahan. Seluruh kegagalan tulis lain di jalur ini
+            // tetap berakhir `unknown`, bukan diulang.
+            if (! $this->advance($index, $expectedState, [
+                'safe_error_code' => $readiness->reasonCode,
+                'safe_error_message' => 'Akses store Gemini File Search sedang tidak tersedia; belum ada unggahan yang terkirim.',
+                'last_checked_at' => now(),
+            ])) {
+                return GeminiIndexingContinuation::Settled;
+            }
+
+            Log::warning('Akses store Gemini File Search belum tersedia; indeksasi ditunda.', [
+                'knowledge_document_id' => $index->knowledge_document_id,
+                'reason' => $readiness->reasonCode,
+            ]);
+
+            return GeminiIndexingContinuation::RetryStatusRead;
+        }
+
+        // Kredensial, store, atau identitas store tidak sah: bukan kondisi
+        // sementara, sehingga tidak ada unggahan yang dicoba dan baris menunggu
+        // perbaikan konfigurasi, bukan retry otomatis tanpa akhir.
+        return $this->fail(
+            $index,
+            $expectedState,
+            $readiness->reasonCode,
+            $this->storeAccessMessage($readiness->state),
+        );
+    }
+
+    private function storeAccessMessage(GeminiStoreReadinessState $state): string
+    {
+        return match ($state) {
+            GeminiStoreReadinessState::AccessDenied => 'Akses ke store Gemini File Search ditolak; unggahan dibatalkan sampai kredensial diperbaiki.',
+            GeminiStoreReadinessState::MissingStore => 'Store Gemini File Search tidak ditemukan; unggahan dibatalkan tanpa membuat store baru.',
+            GeminiStoreReadinessState::InvalidResponse => 'Identitas store Gemini File Search tidak terverifikasi; unggahan dibatalkan.',
+            default => 'Kredensial atau store Gemini File Search belum siap; unggahan dibatalkan.',
+        };
+    }
+
     private function upload(KnowledgeDocumentGeminiIndex $index, KnowledgeDocument $document): GeminiIndexingContinuation
     {
         if ($index->google_file_id !== null) {
@@ -167,6 +279,14 @@ final class GeminiDocumentIndexingService
 
         if (! Storage::disk('local')->exists($document->storage_path)) {
             return $this->fail($index, GeminiDocumentIndexState::Queued, 'source_missing', 'Berkas PDF sumber tidak ditemukan di storage privat.');
+        }
+
+        // Gerbang akses store tepat sebelum klaim dan permintaan unggah; baris
+        // yang ditolak gerbang tidak pernah meninggalkan state `uploading`.
+        $blocker = $this->storeAccessBlocker($index, GeminiDocumentIndexState::Queued);
+
+        if ($blocker !== null) {
+            return $blocker;
         }
 
         // Klaim state sebelum request keluar; bila worker mati setelah ini,
@@ -199,6 +319,15 @@ final class GeminiDocumentIndexingService
     {
         if ($index->google_file_id === null) {
             return $this->fail($index, GeminiDocumentIndexState::Uploaded, 'file_identity_missing', 'Identitas berkas Google tidak tersimpan sehingga impor tidak dapat dilanjutkan.');
+        }
+
+        // Impor adalah permintaan tulis tersendiri, jadi akses store diperiksa
+        // lagi di sini: baris yang diunggah pada eksekusi sebelumnya tidak boleh
+        // menulis ke store yang sudah tidak dapat diakses.
+        $blocker = $this->storeAccessBlocker($index, GeminiDocumentIndexState::Uploaded);
+
+        if ($blocker !== null) {
+            return $blocker;
         }
 
         if (! $this->advance($index, GeminiDocumentIndexState::Uploaded, ['state' => GeminiDocumentIndexState::Importing->value])) {
@@ -238,7 +367,9 @@ final class GeminiDocumentIndexingService
             $this->logFailure('Gemini File Search indexing status check failed.', $index->knowledge_document_id, $exception);
 
             // GET status idempoten: aman diulang sampai batas percobaan job.
-            $this->advance($index, GeminiDocumentIndexState::Pending, ['last_checked_at' => now()]);
+            if (! $this->advance($index, GeminiDocumentIndexState::Pending, ['last_checked_at' => now()])) {
+                return GeminiIndexingContinuation::Settled;
+            }
 
             return GeminiIndexingContinuation::RetryStatusRead;
         }
@@ -269,7 +400,9 @@ final class GeminiDocumentIndexingService
 
     private function awaitRemoteCompletion(KnowledgeDocumentGeminiIndex $index): GeminiIndexingContinuation
     {
-        $this->advance($index, GeminiDocumentIndexState::Pending, ['last_checked_at' => now()]);
+        if (! $this->advance($index, GeminiDocumentIndexState::Pending, ['last_checked_at' => now()])) {
+            return GeminiIndexingContinuation::Settled;
+        }
 
         return GeminiIndexingContinuation::AwaitRemoteCompletion;
     }
@@ -430,20 +563,25 @@ final class GeminiDocumentIndexingService
     }
 
     /**
-     * Transisi state bersyarat: tulisan hanya diterima bila state baris masih
-     * `$from`, sehingga dua worker tidak pernah menginjak tahap yang sama.
+     * Transisi hanya berlaku pada state dan generation yang dibaca job;
+     * update nol baris berarti kepemilikan hilang dan job harus berhenti.
+     * Nilai hasil tulis disalin ke model tanpa refresh(): refresh() bisa
+     * menyerap generation yang lebih baru dan membuat langkah dari job basi
+     * menulis atas nama pemilik generation baru.
      *
      * @param  array<string, mixed>  $attributes
      */
     private function advance(KnowledgeDocumentGeminiIndex $index, GeminiDocumentIndexState $from, array $attributes): bool
     {
+        $updatedAt = now();
         $updated = KnowledgeDocumentGeminiIndex::query()
             ->whereKey($index->id)
             ->where('state', $from->value)
-            ->update($attributes + ['updated_at' => now()]);
+            ->where('generation', $index->generation)
+            ->update($attributes + ['updated_at' => $updatedAt]);
 
         if ($updated === 1) {
-            $index->refresh();
+            $index->forceFill($attributes + ['updated_at' => $updatedAt])->syncOriginal();
         }
 
         return $updated === 1;

@@ -64,10 +64,11 @@ final class IndexKnowledgeDocumentInGemini implements ShouldBeUnique, ShouldQueu
     }
 
     /**
-     * Handle a job failure.
+     * Percobaan habis: finalisasi state baris indeksasi supaya tidak ada baris
+     * yang tampak masih menunggu diproses setelah job gagal permanen.
      */
     public function failed(?Throwable $exception): void
     {
-        app(GeminiDocumentIndexingService::class)->markStatusChecksExhausted($this->indexId, $this->generation);
+        app(GeminiDocumentIndexingService::class)->markRetriesExhausted($this->indexId, $this->generation);
     }
 }
