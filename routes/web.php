@@ -184,6 +184,8 @@ Route::middleware(['prime.auth', 'prime.operator.session'])->group(function (): 
 
     Route::middleware(['prime.role:admin', 'can:manage_ai'])->prefix('/settings/ai/providers')->group(function (): void {
         Route::get('/', [AiProviderConfigurationController::class, 'index'])->name('settings-ai-providers.index');
+        Route::get('/status', [AiProviderConfigurationController::class, 'status'])->name('settings-ai-providers.status');
+        Route::post('/status', [AiProviderConfigurationController::class, 'verifyStore'])->name('settings-ai-providers.status.verify');
         Route::post('/', [AiProviderConfigurationController::class, 'store'])->name('settings-ai-providers.store');
         Route::post('/models', [AiProviderConfigurationController::class, 'discoverModels'])->name('settings-ai-providers.models');
         Route::post('/{configuration}/revisions', [AiProviderConfigurationController::class, 'revise'])->name('settings-ai-providers.revise');

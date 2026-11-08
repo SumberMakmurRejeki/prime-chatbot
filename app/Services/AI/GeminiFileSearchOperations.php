@@ -94,15 +94,29 @@ final class GeminiFileSearchOperations
         return $this->report($operation);
     }
 
-    /**
-     * Periksa akses ke store terkonfigurasi satu kali tanpa mengubah state.
-     */
-    public function checkStoreReadiness(): GeminiStoreReadiness
+    /** Store tujuan terkonfigurasi dalam bentuk resource kanonis tanpa verifikasi jaringan. */
+    public function configuredStoreIdentity(): ?string
     {
         $configuredStore = config('gemini_file_search.indexing.store');
 
         if (! is_string($configuredStore) || trim($configuredStore) === ''
             || preg_match('#^(fileSearchStores/)?[A-Za-z0-9._-]+$#', $configuredStore) !== 1) {
+            return null;
+        }
+
+        return str_starts_with($configuredStore, 'fileSearchStores/')
+            ? $configuredStore
+            : 'fileSearchStores/'.$configuredStore;
+    }
+
+    /**
+     * Periksa akses ke store terkonfigurasi satu kali tanpa mengubah state.
+     */
+    public function checkStoreReadiness(): GeminiStoreReadiness
+    {
+        $configuredStore = $this->configuredStoreIdentity();
+
+        if ($configuredStore === null) {
             return new GeminiStoreReadiness(GeminiStoreReadinessState::NotConfigured, 'store_not_configured');
         }
 

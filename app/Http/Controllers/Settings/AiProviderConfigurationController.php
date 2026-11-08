@@ -8,6 +8,7 @@ use App\Http\Requests\Settings\RestoreAiProviderConfigurationRequest;
 use App\Http\Requests\Settings\StoreAiProviderConfigurationRequest;
 use App\Models\AiProviderConfiguration;
 use App\Models\AiProviderConfigurationRevision;
+use App\Services\AI\AiProviderStatusService;
 use App\Services\AI\ModelDiscoveryService;
 use App\Services\Settings\AiProviderConfigurationService;
 use App\Services\Settings\AiProviderLifecycleService;
@@ -31,6 +32,31 @@ class AiProviderConfigurationController extends Controller
                 // Status "credential terisi" diturunkan dari kolom tanpa pernah membuka/mendekripsi nilainya.
                 ->selectRaw("CASE WHEN credential IS NOT NULL AND credential <> '' THEN 1 ELSE 0 END AS credential_is_configured")
                 ->orderByDesc('revision_number')])->orderBy('display_name')->get(),
+        ]);
+    }
+
+    /**
+     * Status konfigurasi provider untuk halaman pengaturan.
+     *
+     * Read-only dan tanpa permintaan ke provider: pembukaan halaman tidak
+     * memakai kuota Google dan tidak pernah menandai store sehat hanya karena
+     * konfigurasinya ada.
+     */
+    public function status(AiProviderStatusService $status): JsonResponse
+    {
+        return response()->json($status->snapshot());
+    }
+
+    /**
+     * Verifikasi eksplisit akses store File Search yang dikonfigurasi.
+     *
+     * Satu-satunya jalur status yang menghubungi Google, hanya lewat GET
+     * store: tanpa unggah, impor, penghapusan, atau perubahan pointer revisi.
+     */
+    public function verifyStore(AiProviderStatusService $status): JsonResponse
+    {
+        return response()->json([
+            'file_search_verification' => $status->verifyConfiguredStore(),
         ]);
     }
 
