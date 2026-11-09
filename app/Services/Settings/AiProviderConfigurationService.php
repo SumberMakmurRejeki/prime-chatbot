@@ -13,7 +13,7 @@ class AiProviderConfigurationService
 {
     public function __construct(private ActivityLogService $activityLog) {}
 
-    /** @param array{display_name: string, purpose: string, model_id: string, base_url: string, credential?: ?string} $data */
+    /** @param array{display_name: string, purpose: string, driver?: ?string, model_id: string, base_url: string, credential?: ?string} $data */
     public function create(Request $request, array $data): AiProviderConfiguration
     {
         return DB::transaction(function () use ($request, $data): AiProviderConfiguration {
@@ -23,7 +23,15 @@ class AiProviderConfigurationService
             ]);
 
             // Revisi pertama dibuat atomik bersama provider-nya di dalam satu transaksi.
-            $revision = $this->createRevision($configuration, 1, $data, $data['credential'] ?? null);
+            // Driver bawaan menjaga kompatibilitas klien lama yang tidak mengirim
+            // pilihan eksplisit.
+            $revision = $this->createRevision(
+                $configuration,
+                1,
+                $data['driver'] ?? AiProviderConfigurationRevision::DEFAULT_DRIVER,
+                $data,
+                $data['credential'] ?? null,
+            );
 
             $this->activityLog->log($request, 'ai_provider_configuration', 'create', 'Provider configuration revision created.', 'ai_provider_configurations', $configuration->id, null, [
                 'purpose' => $configuration->purpose,
@@ -38,7 +46,7 @@ class AiProviderConfigurationService
         });
     }
 
-    /** @param array{display_name: string, purpose: string, model_id: string, base_url: string, credential?: ?string} $data */
+    /** @param array{display_name: string, purpose: string, driver?: ?string, model_id: string, base_url: string, credential?: ?string} $data */
     public function revise(Request $request, AiProviderConfiguration $configuration, array $data): AiProviderConfiguration
     {
         return DB::transaction(function () use ($request, $configuration, $data): AiProviderConfiguration {
@@ -75,7 +83,21 @@ class AiProviderConfigurationService
                     ->value('credential');
             }
 
-            $revision = $this->createRevision($locked, $revisionNumber, $data, $credential);
+            // Driver revisi selalu mengikuti konfigurasi, bukan isi request: pergantian
+            // jenis provider hanya lewat konfigurasi baru, sehingga revisi yang salah
+            // format tidak pernah mengubah identitas provider.
+            $existingDriver = $locked->revisions()
+                ->orderByDesc('revision_number')
+                ->toBase()
+                ->value('driver');
+
+            $revision = $this->createRevision(
+                $locked,
+                $revisionNumber,
+                is_string($existingDriver) && $existingDriver !== '' ? $existingDriver : AiProviderConfigurationRevision::DEFAULT_DRIVER,
+                $data,
+                $credential,
+            );
 
             if (is_string($retainedCipher) && $retainedCipher !== '') {
                 // Salin ciphertext apa adanya lewat query builder agar cast `encrypted`
@@ -130,12 +152,12 @@ class AiProviderConfigurationService
     }
 
     /** @param array{model_id: string, base_url: string} $data */
-    private function createRevision(AiProviderConfiguration $configuration, int $revisionNumber, array $data, ?string $credential): AiProviderConfigurationRevision
+    private function createRevision(AiProviderConfiguration $configuration, int $revisionNumber, string $driver, array $data, ?string $credential): AiProviderConfigurationRevision
     {
         // Payload dibangun eksplisit; internal state (configuration_id, revision_number,
         // test_state) tidak dapat diisi dari data request apa pun.
         $revision = $configuration->revisions()->make([
-            'driver' => 'openai-compatible',
+            'driver' => $driver,
             'model_id' => $data['model_id'],
             'base_url' => $data['base_url'],
             'credential' => $credential,

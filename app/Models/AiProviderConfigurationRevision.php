@@ -7,6 +7,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class AiProviderConfigurationRevision extends Model
 {
+    /**
+     * Driver provider yang boleh dikonfigurasi melalui AI Settings. Daftar ini
+     * juga menjadi batas validasi create/revise dan pilihan di form Admin.
+     *
+     * @var list<string>
+     */
+    public const SUPPORTED_DRIVERS = ['openai', 'openai-compatible', 'gemini', 'openrouter'];
+
+    /** Driver default saat klien tidak mengirim pilihan eksplisit. */
+    public const DEFAULT_DRIVER = 'openai-compatible';
+
     protected $fillable = [
         'driver', 'model_id', 'base_url', 'credential', 'generation_parameters', 'enabled',
     ];

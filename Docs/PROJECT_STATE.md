@@ -173,20 +173,25 @@ bukti QA/test (TEST-VERIFIED), dan aktivasi operasional (PENDING).
 | Assistant Admin-only | SOURCE-VERIFIED + TEST-SUPPORTED — grup `/assistant` memakai `EnsureActiveAdmin`; endpoint AI settings/knowledge memakai `prime.role:admin` + `can:manage_ai` | `routes/web.php:185-215`, `app/Providers/AppServiceProvider.php:57-60`, `tests/Feature/AI/GeminiAssistantChatTest.php` |
 | Indexing Gemini File Search | SOURCE-VERIFIED — opt-in, default mati, diproses antrean, store dari `GEMINI_FILE_SEARCH_STORE_ID`, tidak mempublikasikan SOP dan tidak mengubah retrieval | `config/gemini_file_search.php`, `app/Services/AI/GeminiDocumentIndexingService.php`, `app/Jobs/IndexKnowledgeDocumentInGemini.php` |
 | Kredensial Gemini tunggal | SOURCE-VERIFIED — satu sumber koneksi dari revisi chat provider aktif; kredensial tidak disimpan di config File Search | `app/Services/AI/GeminiFileSearchConnection.php` |
-| **Cacat AI Settings** | SOURCE-VERIFIED — `createRevision()` selalu menulis driver `openai-compatible`, sehingga membuat/merevisi konfigurasi Gemini dari UI Admin belum benar | `app/Services/Settings/AiProviderConfigurationService.php:132-149` |
+| **AI Settings Gemini driver** | SOURCE-VERIFIED + TEST-VERIFIED — Admin memilih driver dari daftar yang divalidasi server-side; create menyimpan driver pilihan, revise mempertahankan driver konfigurasi, dan pergantian jenis provider pada revisi ditolak. | `app/Http/Requests/Settings/StoreAiProviderConfigurationRequest.php`, `app/Services/Settings/AiProviderConfigurationService.php`, `app/Models/AiProviderConfigurationRevision.php`, `tests/Feature/Settings/AiProviderConfigurationTest.php`, `tests/Feature/AI/GeminiAdminProviderConfigurationTest.php` |
 | Qdrant legacy di lifecycle SOP | SOURCE-VERIFIED — `VectorStore` masih di-bind ke `QdrantVectorStore` dan dipakai `KnowledgeDocumentService` (process/publish) serta `DocumentEmbeddingIndexingService`; Qdrant bukan backend Assistant saat ini | `app/Providers/AppServiceProvider.php:32`, `app/Services/AI/KnowledgeDocumentService.php:134,206` |
 | Migration provenance di target operasional | PENDING — migration sudah di-commit (`0981c39`) tetapi belum dieksekusi pada target operasional; baris historis tanpa provenance/import identity tidak pernah eligible | Migration di atas; belum ada bukti penerapan operasional |
-| Aktivasi/cutover operasional | PENDING — QA bukan approval produksi; menunggu perbaikan AI Settings, penerapan migration, verifikasi operasional, dan approval Owner | OWNER DECISION (2026-11-08); tidak ada bukti aktivasi operasional |
+| Aktivasi/cutover operasional | PENDING — QA bukan approval produksi; menunggu penerapan migration, verifikasi operasional, dan approval Owner | OWNER DECISION (2026-11-08); tidak ada bukti aktivasi operasional |
 | Web search / grounding via web | NOT IMPLEMENTED — tidak ada integrasi terverifikasi dalam scope ini | Tidak ada bukti source yang diverifikasi di sini |
 | AI operasional terhadap database domain | NOT IMPLEMENTED — jalur yang diverifikasi hanya menjawab dari dokumen SOP | Tidak ada jalur query domain yang diverifikasi |
 
-**QA (TEST-VERIFIED historis):** laporan OMP 58 mencatat synthetic live Gemini
-verification dan browser Assistant E2E berhasil, bersama 378 test dan 1.738
-assertion lulus pada run tersebut. Run PHPUnit pada 2026-11-09 (PHP 8.3.36,
-`vendor/bin/phpunit`) menghasilkan **1.193 test, 6.970 assertion, PASS**. Angka
-itu adalah hasil PHPUnit aktual pada SQLite `:memory:`; ia tidak membuktikan
-aktivasi operasional dan tidak menggantikan pemeriksaan live/browser yang tidak
-dijalankan ulang pada sesi dokumentasi ini.
+**QA (TEST-VERIFIED, sesi 2026-11-09):** run PHPUnit pada subset relevan,
+`tests/Feature/Settings` + `tests/Feature/AI`, menghasilkan **459 test, 2.422
+assertion, PASS** (PHP 8.3.36, SQLite `:memory:`). Feature test baru membuktikan
+konfigurasi Gemini harus lulus uji sebelum aktivasi dan bahwa `ChatProviderResolver`
+serta File Search memakai revision credential yang sama tanpa panggilan jaringan.
+Browser Playwright CLI pada disposable SQLite fixture di luar repository
+membuktikan Admin dapat memilih Gemini, menyimpan credential sintetis, dan
+memperbarui model tanpa mengganti driver; fixture menunjukkan dua revision
+`gemini` dengan credential tersimpan dan tidak ada permintaan provider live.
+Full suite, verifikasi live, dan pemeriksaan browser sebelumnya tetap HISTORICAL
+dan tidak dijalankan ulang pada task ini; angka subset di atas tidak
+menggantikannya dan tidak membuktikan aktivasi operasional.
 
 Indexing Gemini tetap bukan otorisasi publikasi atau retrieval: hanya aksi Admin
 yang mempublikasikan revisi, dan hanya revisi terbit saat ini yang eligible.
@@ -248,7 +253,7 @@ Layanan eksternal:
 | Qdrant VectorStore dan embedding | **CONDITIONAL — RETIRE AFTER VERIFICATION** | `KnowledgeDocumentService::process()` menggunakan `DocumentEmbeddingIndexingService`; `publish()` memakai `VectorStore`; `AppServiceProvider` mengikatnya ke Qdrant. Tidak dapat dihapus sampai workflow upload/process/publish memakai lifecycle Gemini yang sudah aktif dan Qdrant tidak lagi mengubah publikasi/retrieval. Pengganti: lifecycle SOP berbasis registry + Gemini indexing. Verifikasi dengan tes lifecycle, UAT Admin, bukti migration/data reconciliation, dan approval Owner. |
 | SOP upload/process/publish yang bergantung Qdrant | **CONDITIONAL — REPLACE** | `KnowledgeDocumentController`, `ProcessKnowledgeDocument`, dan `KnowledgeDocumentService` melayani upload/proses/publish Admin; process menghasilkan embedding Qdrant dan publish mengaktifkan vector store. Pertahankan alur Admin; ganti hanya ketergantungan Qdrant setelah Gemini lifecycle memverifikasi ingestion, readiness, publish/supersede, rollback/failure, dan status index. Jangan menghapusnya pada milestone ini. |
 | Konfigurasi RAG/embedding lama | **CONDITIONAL — RETIRE AFTER VERIFICATION** | `config/ai.php`/`config/qdrant.php`, resolver revisi embedding, dan `DocumentGroundedAnswerService` masih menjadi bagian pipeline legacy/tes; Qdrant readiness dan lifecycle mengonsumsi sebagian konfigurasi. Retire setelah consumer-runtime maupun consumer-test diinventaris, Qdrant lifecycle diganti, dan regression suite membuktikan tidak ada rujukan aktif. `DocumentGroundedAnswerService` tidak terikat sebagai fallback runtime; ia tetap diuji sebagai legacy implementation. |
-| AI provider dan AI manager settings | **KEEP, WITH DEFECT** | Route Admin `settings/ai/providers` dan `settings/ai/managers` mengelola provider/revisi dan hak akses manager. Provider revisions saat ini dipaksa `openai-compatible`; driver Gemini masih perlu koreksi sebelum konfigurasi Gemini dapat dibuat/direvisi dengan benar. Simplifikasi menu/nav adalah roadmap terpisah, bukan alasan penghapusan. |
+| AI provider dan AI manager settings | **KEEP** | Route Admin `settings/ai/providers` dan `settings/ai/managers` mengelola provider/revisi dan hak akses manager. Driver (`openai`, `openai-compatible`, `gemini`, `openrouter`) divalidasi server-side; create menyimpan pilihan, revisi mempertahankan driver konfigurasi, dan jenis provider lain memerlukan konfigurasi baru. Satu revisi credential Gemini aktif tetap melayani generation dan File Search; Store ID tetap konfigurasi resource terpisah. UI Blade tetap dipertahankan; simplifikasi menu/nav adalah roadmap terpisah. |
 | Assistant dan knowledge-document pages | **KEEP** | `resources/views/pages/assistant/*` dirender oleh Assistant routes; `settings/knowledge-documents/index.blade.php` menyajikan workflow Admin untuk registry, indexing, dan publikasi. Pertahankan sampai kebutuhan produk dan pengganti UI yang diterima membenarkan perubahan; halaman knowledge-documents bukan sekadar halaman retrieval Gemini. |
 | Blade business views | **CONDITIONAL — RETIRE AFTER VERIFICATION** | `resources/views/pages/**` masih dirender oleh route/controller bisnis yang ada; Vue belum menggantikan seluruh halaman. Ganti per halaman secara inkremental; hapus tiap Blade hanya setelah route/permission, fungsi, responsive behavior, aksesibilitas, dan regression/UAT setara terverifikasi serta diterima. Tidak ada halaman bisnis dihapus pada milestone ini. |
 | Inertia root Blade | **KEEP** | `resources/views/spa.blade.php` adalah root template untuk response Inertia; bukan business view yang dapat dihapus lewat migrasi halaman. Pertahankan sebagai infrastruktur kecuali integrasi Inertia diganti dan diuji menyeluruh. |
@@ -291,10 +296,11 @@ HARDENED/PARTIAL/BLOCKED): NOT VERIFIED.
    `37e82cc` (dan commit dokumentasi milestone ini) sudah ada di `origin`.
    PR #1 sudah digabung (`origin/main` = `277d7251`). `.omp/mcp.json`
    tetap lokal (diabaikan Git).
-2. **AI Settings belum dapat menyetel driver Gemini dengan benar.**
-   `AiProviderConfigurationService::createRevision()` menetapkan
-   `openai-compatible` untuk semua revisi. Perbaikan konfigurasi UI adalah
-   blocker sebelum setup Gemini operasional.
+2. **Driver AI Settings sudah diperbaiki (source + QA).** Admin dapat memilih
+   Gemini saat membuat konfigurasi; revisi mempertahankan driver dan API Key
+   tersimpan bila credential dikosongkan. Perubahan jenis provider ditolak pada
+   revisi dan memerlukan konfigurasi baru. QA sintetis belum menjalankan
+   request live atau mengaktifkan konfigurasi operasional.
 3. **Migration provenance belum diterapkan pada target operasional.** Migration
    sudah di-commit sebagai `0981c39`; jangan menjalankan migration pada target
    operasional tanpa otorisasi. Baris lama tanpa provenance/import identity
@@ -328,9 +334,10 @@ HARDENED/PARTIAL/BLOCKED): NOT VERIFIED.
 Urutan ini adalah rekomendasi engineering berdasarkan gap di atas, bukan
 komitmen jadwal.
 
-1. **Gemini Settings configuration correction** — pilih/persist driver Gemini
-   secara benar; satu konfigurasi credential tetap menjadi sumber chat dan File
-   Search. Status: PENDING.
+1. **Gemini Settings configuration correction** — DONE pada branch kerja:
+   driver dipilih dari daftar tervalidasi, persist pada create, dan terkunci
+   pada revisi; satu credential aktif tetap menjadi sumber chat dan File Search.
+   Verifikasi lanjutan (live provider, aktivasi operasional) tetap PENDING.
 2. **Gemini SOP lifecycle cutover dari Qdrant** — setelah provenance migration,
    data/index verification, dan UAT; approval Owner dibutuhkan sebelum
    operasional. Qdrant tetap dependency sampai cutover disetujui. Status: PENDING.

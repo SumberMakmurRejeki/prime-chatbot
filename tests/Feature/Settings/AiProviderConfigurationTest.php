@@ -64,6 +64,30 @@ class AiProviderConfigurationTest extends TestCase
         $this->assertDatabaseCount('ai_provider_configuration_revisions', 0);
     }
 
+    public function test_unauthorized_users_cannot_revise_a_gemini_configuration(): void
+    {
+        $this->actingAs($this->manager)->post('/settings/ai/providers', $this->validPayload([
+            'driver' => 'gemini',
+            'display_name' => 'Gemini Guarded',
+            'base_url' => 'https://generativelanguage.googleapis.com/v1beta',
+            'credential' => 'fictional-gemini-key',
+        ]))->assertRedirect();
+        $configuration = AiProviderConfiguration::query()->sole();
+        $reviseUrl = '/settings/ai/providers/'.$configuration->id.'/revisions';
+        $payload = $this->validPayload([
+            'driver' => 'gemini',
+            'base_url' => 'https://generativelanguage.googleapis.com/v1beta',
+        ]);
+
+        $this->actingAs($this->admin)->post($reviseUrl, $payload)->assertForbidden();
+        $this->actingAs($this->operator)->post($reviseUrl, $payload)->assertRedirect('/403');
+        $this->app['auth']->logout();
+        $this->post($reviseUrl, $payload)->assertRedirect('/login');
+
+        $this->assertSame(1, $configuration->revisions()->count());
+        $this->assertSame('gemini', $configuration->revisions()->sole()->driver);
+    }
+
     public function test_save_creates_encrypted_untested_revision_without_activation_or_secret_readback(): void
     {
         $secret = 'provider-token-value-that-must-not-leak';
@@ -165,20 +189,110 @@ class AiProviderConfigurationTest extends TestCase
         $this->assertNull($configuration->fresh()->previous_known_good_revision_id);
     }
 
-    public function test_driver_field_cannot_override_the_fixed_openai_compatible_driver(): void
+    public function test_admin_can_create_a_gemini_configuration_with_persisted_gemini_driver(): void
     {
-        foreach (['sumopod', 'gemini', ''] as $attemptedDriver) {
+        $this->actingAs($this->manager)->post('/settings/ai/providers', $this->validPayload([
+            'driver' => 'gemini',
+            'display_name' => 'Gemini Chat',
+            'model_id' => 'gemini-3.5-flash-lite',
+            'base_url' => 'https://generativelanguage.googleapis.com/v1beta',
+            'credential' => 'fictional-gemini-key',
+        ]))->assertRedirect('/settings/ai/providers')->assertSessionHasNoErrors();
+
+        $configuration = AiProviderConfiguration::query()->sole();
+        $revision = $configuration->revisions()->sole();
+
+        $this->assertSame('gemini', $revision->driver);
+        $this->assertSame('gemini-3.5-flash-lite', $revision->model_id);
+        $this->assertSame('fictional-gemini-key', $revision->credential);
+        $this->assertSame('untested', $revision->test_state);
+        $this->assertNull($configuration->active_revision_id);
+    }
+
+    public function test_revising_a_gemini_configuration_keeps_the_driver_and_retains_the_stored_credential(): void
+    {
+        $this->actingAs($this->manager)->post('/settings/ai/providers', $this->validPayload([
+            'driver' => 'gemini',
+            'model_id' => 'gemini-3.5-flash-lite',
+            'base_url' => 'https://generativelanguage.googleapis.com/v1beta',
+            'credential' => 'fictional-gemini-key',
+        ]))->assertRedirect()->assertSessionHasNoErrors();
+        $configuration = AiProviderConfiguration::query()->sole();
+        $first = $configuration->revisions()->sole();
+
+        $revisionPayload = $this->validPayload([
+            'model_id' => 'gemini-3.8-flash',
+            'base_url' => 'https://generativelanguage.googleapis.com/v1beta',
+            'credential' => '',
+        ]);
+        unset($revisionPayload['driver']);
+
+        $this->post('/settings/ai/providers/'.$configuration->id.'/revisions', $revisionPayload)
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $revisions = $configuration->fresh()->revisions()->orderBy('revision_number')->get();
+        $this->assertCount(2, $revisions);
+        $this->assertSame(2, $revisions[1]->revision_number);
+        $this->assertSame('gemini', $revisions[1]->driver);
+        $this->assertSame('gemini-3.8-flash', $revisions[1]->model_id);
+        $this->assertSame('fictional-gemini-key', $revisions[1]->credential);
+        $this->assertSame('gemini', $first->fresh()->driver);
+        $this->assertSame('untested', $revisions[1]->test_state);
+        $this->assertNull($configuration->fresh()->active_revision_id);
+    }
+
+    public function test_requests_without_driver_input_use_the_default_and_keep_the_existing_driver(): void
+    {
+        $createPayload = $this->validPayload();
+        unset($createPayload['driver']);
+
+        $this->actingAs($this->manager)->post('/settings/ai/providers', $createPayload)->assertRedirect()->assertSessionHasNoErrors();
+        $configuration = AiProviderConfiguration::query()->sole();
+        $this->assertSame('openai-compatible', $configuration->revisions()->sole()->driver);
+
+        $revisionPayload = $this->validPayload(['model_id' => 'newer-model-id']);
+        unset($revisionPayload['driver']);
+
+        $this->post('/settings/ai/providers/'.$configuration->id.'/revisions', $revisionPayload)
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(
+            ['openai-compatible', 'openai-compatible'],
+            $configuration->fresh()->revisions()->orderBy('revision_number')->pluck('driver')->all(),
+        );
+    }
+
+    public function test_revision_cannot_switch_the_configuration_to_another_provider_driver(): void
+    {
+        $this->actingAs($this->manager)->post('/settings/ai/providers', $this->validPayload([
+            'driver' => 'gemini',
+            'model_id' => 'gemini-3.5-flash-lite',
+            'base_url' => 'https://generativelanguage.googleapis.com/v1beta',
+            'credential' => 'fictional-gemini-key',
+        ]))->assertRedirect();
+        $configuration = AiProviderConfiguration::query()->sole();
+
+        $this->from('/settings/ai/providers')->post('/settings/ai/providers/'.$configuration->id.'/revisions', $this->validPayload([
+            'driver' => 'openai-compatible',
+        ]))->assertSessionHasErrors('driver');
+
+        $this->assertSame(1, $configuration->revisions()->count());
+        $this->assertSame('gemini', $configuration->revisions()->sole()->driver);
+    }
+
+    public function test_unsupported_driver_values_are_rejected_server_side_without_creating_any_row(): void
+    {
+        foreach (['sumopod', 'anthropic', 'GEMINI', 'gemini/file-search'] as $unsupportedDriver) {
             $this->actingAs($this->manager)->from('/settings/ai/providers')->post('/settings/ai/providers', $this->validPayload([
-                'driver' => $attemptedDriver,
-                'display_name' => 'Driver ['.$attemptedDriver.']',
-            ]))->assertRedirect()->assertSessionHasNoErrors();
+                'driver' => $unsupportedDriver,
+                'display_name' => 'Driver ['.$unsupportedDriver.']',
+            ]))->assertSessionHasErrors('driver');
         }
 
-        $this->assertSame(3, AiProviderConfigurationRevision::query()->count());
-        $this->assertSame(
-            ['openai-compatible'],
-            AiProviderConfigurationRevision::query()->distinct()->orderBy('driver')->pluck('driver')->all(),
-        );
+        $this->assertDatabaseCount('ai_provider_configurations', 0);
+        $this->assertDatabaseCount('ai_provider_configuration_revisions', 0);
     }
 
     public function test_invalid_provider_input_is_rejected_without_partial_rows_and_secret_is_not_old_input(): void
@@ -274,6 +388,10 @@ class AiProviderConfigurationTest extends TestCase
             ->assertSee('Digunakan untuk')
             ->assertSee('Chatbot PRIME')
             ->assertSee('Pencarian Dokumen (RAG)')
+            ->assertSee('Jenis provider')
+            ->assertSee('OpenAI-compatible')
+            ->assertSee('Gemini (Google AI)')
+            ->assertSee('name="driver"', false)
             ->assertSee('Base URL')
             ->assertSee('type="password"', false)
             ->assertSee('Ambil model dari provider')
@@ -311,6 +429,7 @@ class AiProviderConfigurationTest extends TestCase
             ->assertSee('value="embedding" selected', false)
             ->assertSee('value="https://models.example.test/v1"', false)
             ->assertSee('value="vendor/latest-embed"', false)
+            ->assertSee('name="driver" value="openai-compatible"', false)
             ->assertSee('Kosongkan untuk menggunakan kembali API Key tersimpan.')
             ->assertDontSee($secret);
 
@@ -485,6 +604,7 @@ class AiProviderConfigurationTest extends TestCase
     {
         return array_replace([
             'display_name' => 'Primary Chat',
+            'driver' => 'openai-compatible',
             'purpose' => 'chat',
             'model_id' => 'vendor/model-id',
             'base_url' => 'https://api.example.test/v1',

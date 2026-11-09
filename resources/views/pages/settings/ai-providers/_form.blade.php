@@ -12,6 +12,17 @@
     $baseUrl = old('base_url', $isNewProvider ? '' : $revision?->base_url);
     $modelId = old('model_id', $isNewProvider ? '' : $revision?->model_id);
     $purpose = old('purpose', $isNewProvider ? 'chat' : $configuration->purpose);
+    // Jenis provider hanya dipilih saat membuat konfigurasi; revisi selalu
+    // memakai driver konfigurasi yang ada.
+    $driver = $isNewProvider
+        ? old('driver', \App\Models\AiProviderConfigurationRevision::DEFAULT_DRIVER)
+        : ($revision?->driver ?? \App\Models\AiProviderConfigurationRevision::DEFAULT_DRIVER);
+    $driverLabels = [
+        'openai' => 'OpenAI',
+        'openai-compatible' => 'OpenAI-compatible',
+        'gemini' => 'Gemini (Google AI)',
+        'openrouter' => 'OpenRouter',
+    ];
 @endphp
 <label class="block">
     <span class="mb-2 block font-medium">Nama</span>
@@ -35,6 +46,24 @@
             @endforeach
         </select>
         <span class="mt-1 block text-sm text-[var(--color-prime-muted)]" data-purpose-help>{{ $purpose === 'embedding' ? 'Untuk pencarian isi dokumen menggunakan embedding.' : 'Untuk menjawab pertanyaan pengguna.' }}</span>
+    @endif
+</label>
+<label class="block">
+    <span class="mb-2 block font-medium">Jenis provider</span>
+    @if ($isNewProvider)
+        <select name="driver" required class="w-full rounded-xl border border-[var(--color-prime-border)] bg-white px-4 py-3">
+            @foreach (\App\Models\AiProviderConfigurationRevision::SUPPORTED_DRIVERS as $supportedDriver)
+                <option value="{{ $supportedDriver }}" @selected($driver === $supportedDriver)>{{ $driverLabels[$supportedDriver] ?? $supportedDriver }}</option>
+            @endforeach
+        </select>
+        <span class="mt-1 block text-sm text-[var(--color-prime-muted)]">Gemini memakai API Key Google AI; Store File Search diatur terpisah, bukan di sini.</span>
+    @else
+        {{-- Revisi tidak boleh mengubah jenis provider; nilai tetap dikirim lewat hidden input --}}
+        <input type="hidden" name="driver" value="{{ $driver }}">
+        <select name="driver_display" disabled class="w-full rounded-xl border border-[var(--color-prime-border)] bg-white px-4 py-3">
+            <option selected>{{ $driverLabels[$driver] ?? $driver }}</option>
+        </select>
+        <span class="mt-1 block text-sm text-[var(--color-prime-muted)]">Jenis provider mengikuti konfigurasi ini. Buat konfigurasi baru untuk mengganti provider.</span>
     @endif
 </label>
 <label class="block md:col-span-2">

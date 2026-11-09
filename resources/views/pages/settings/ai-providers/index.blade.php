@@ -47,7 +47,7 @@
                     // dimensi embedding teruji untuk purpose embedding.
                     $activatable = fn ($revision): bool => $revision !== null
                         && in_array($configuration->purpose, ['chat', 'embedding'], true)
-                        && in_array($revision->driver, ['openai', 'openai-compatible', 'gemini', 'openrouter'], true)
+                        && in_array($revision->driver, \App\Models\AiProviderConfigurationRevision::SUPPORTED_DRIVERS, true)
                         && $revision->enabled
                         && $revision->test_state === 'passed'
                         && $revision->test_attempt_id !== null
