@@ -205,8 +205,11 @@ managed block.
   `app/Providers/TestingDatabaseServiceProvider.php`).
 - Global engineering standards remain external; do not copy them into this
   repository.
-- Project rules under `.ai/rules` are read only when the referenced paths
-  actually exist; none exist today, so do not create them unless asked.
+- Project rules under `.ai/rules` are read when the referenced paths actually
+  exist. Canonical rule: `.ai/rules/code-commenting.md` — Code Commenting &
+  Human Readability Standard; read it before writing or reviewing code comments
+  in PHP, Vue, JavaScript, or TypeScript. Do not create other `.ai/rules` files
+  unless asked.
 - LOCAL ENVIRONMENT: PRIME Google runs on Windows with Laragon, not Laravel
   Herd. Do not assume Herd services, the Herd CLI, or automatic `*.test`
   domains; use the actual project environment and verified local URL

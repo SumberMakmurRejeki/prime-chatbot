@@ -16,11 +16,15 @@ its databases are separate and must not be modified from here.
 | Local path | `C:\laragon\www\prime-google` |
 | Repository | `SumberMakmurRejeki/prime-chatbot` (GitHub remote `origin`) |
 
-The initial baseline commit and the agent-foundation commit are both present in
-this repository's history, and the current branch is published to `origin`.
-The agent-foundation commit contains 35 files. Run `git status` for the current
-working-tree state; historical status observations do not describe later
-changes.
+After the agent-foundation baseline, development continues on feature
+branches. At the 2026-11-09 Gemini milestone finalization the working branch
+is `feature/gemini-file-search`; the Gemini implementation is committed locally
+as `0981c39` (indexing provenance and scoped retrieval) and `37e82cc`
+(Assistant binding), followed by the documentation commit that carries this
+text. `origin` carries `main`, whose HEAD is the merge commit of PR #1 from
+`chore/prime-google-agent-foundation`; the feature branch is not published yet.
+Run `git status` and `git log` for the current working-tree and branch state;
+historical observations do not describe later changes.
 
 ## Current capabilities
 
@@ -35,8 +39,8 @@ project:
 - In-app notifications and application settings. Web Push was removed from the
   runtime; only a legacy service-worker cleanup shim and the `push_subscriptions`
   schema remain (see "Database identities" for the guarded secondary connection).
-- An AI assistant over the knowledge-document registry, backed by the
-  temporary Qdrant vector store (see "AI subsystem status").
+- The Admin-only Assistant uses Gemini for answer generation and Gemini File Search for SOP retrieval; it does not fall back to Qdrant. Only the current published SOP revision is eligible, and returned citations must match the trusted registry and import identity.
+- Qdrant remains in the legacy SOP upload/index/publish lifecycle and its vector-store implementation. The Gemini Assistant binding does not remove those Qdrant dependencies; see "AI subsystem status".
 
 ## Stack and prerequisites
 
@@ -124,19 +128,23 @@ access. Keep outbound HTTP fakes in place.
 
 ## AI subsystem status
 
-The AI assistant, provider settings, knowledge-document ingestion and retrieval
-services are inherited from PRIME. Retrieval uses a vector-store abstraction;
-Qdrant is its only currently bound implementation.
+**Implemented in the working tree:** `GroundedAnswerService` is bound to `GeminiGroundedAnswerService`; Assistant conversations use Gemini answer generation with a scoped Gemini File Search tool. Retrieval candidates require the current published, `ready` SOP revision, a completed Gemini index row, matching document snapshot and configured store, and matching credential configuration/revision provenance. Historical revisions and rows lacking required provenance or `import_identity` are excluded (fail closed). There is no implicit Qdrant fallback in the Assistant.
 
-Qdrant is temporary legacy code, not a supported setup dependency. Do not enable
-or connect to it during ordinary setup or baseline verification, and never let
-it access original PRIME data or collections. Collection configuration has no
-shared default; an empty value is rejected when the vector-store configuration
-is resolved. The environment templates name isolated PRIME Google collections.
+**Citation trust:** PRIME builds the trusted citation map from eligible registry/index records. Gemini citation annotations must match the trusted document code, canonical version, store URI and generation-specific `import_identity`; unverified citations are discarded. A response without a verified citation is not presented as an SOP answer.
 
-Gemini File Search is the planned replacement, not an implemented capability.
-`GEMINI_API_KEY` in the environment templates is an empty placeholder; no Gemini
-File Search integration exists yet.
+**Credential and store configuration:** File Search uses the active Gemini chat-provider revision for both answer generation and indexing operations; credential material is not stored in `config/gemini_file_search.php`. The File Search Store is configured separately through `GEMINI_FILE_SEARCH_STORE_ID`. Indexing is opt-in (`GEMINI_FILE_SEARCH_INDEXING_ENABLED`, default `false`) and queue-based. Do not confuse that indexing switch with the Assistant retrieval binding.
+
+**Verified in QA and tests:** OMP 58 reported 378 tests and 1,738 assertions passing, along with Admin-only authorization, published-SOP eligibility, citation/import-identity checks, no Assistant fallback, synthetic live Gemini verification, and a browser Assistant E2E. On the 2026-11-09 finalization run, `tests/Feature/AI` plus `tests/Feature/KnowledgeDocumentLifecycleTest.php` reproduced 378 tests and 1,738 assertions, and the full suite passed with 1,193 tests and 6,970 assertions (PHP 8.3.36, SQLite `:memory:`). Live and browser checks were not re-run. Gemini has not been approved for operational cutover.
+
+**Operational cutover pending:** The migration adding Gemini indexing credential provenance and `import_identity` is committed on the feature branch but has not been executed against the operational target. Existing index rows without provenance remain ineligible; do not treat historical records as verified. AI Settings currently creates every provider revision with the `openai-compatible` driver, so creating/revising a Gemini provider through that UI is not correct. The UI correction and operational migration/cutover need separate verification and Owner approval.
+
+**Legacy Qdrant:** Qdrant is not the Assistant's active answer/retrieval backend, but remains in the SOP document lifecycle and embedding/vector-store services. Qdrant removal is a separate milestone and is not part of this change. Gemini is the target RAG provider; this working-tree implementation is not a production-readiness or operational-activation claim.
+
+The front end is migrating incrementally from Blade to Laravel + Inertia/Vue
+with the NovaSpark Design System as the target. Vue pages and Blade business
+pages coexist; migration is not complete. Retain Blade where technically
+required, including the Inertia root template, and remove a Blade business page
+only after its Vue replacement is verified and accepted.
 
 ## Seeder safety
 
@@ -170,6 +178,4 @@ Do not run seeders against any database outside the approved identities.
 
 - `public/favicon.ico` is a zero-byte placeholder and is excluded from the Git
   baseline; it is not referenced by the application.
-- Gemini File Search integration, its documentation and its tests do not exist
-  yet.
 
