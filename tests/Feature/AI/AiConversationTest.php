@@ -3,7 +3,7 @@
 namespace Tests\Feature\AI;
 
 use App\Models\User;
-use App\Services\AI\DocumentGroundedAnswerService;
+use App\Services\AI\GroundedAnswerService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -16,9 +16,9 @@ class AiConversationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $answers = $this->createStub(DocumentGroundedAnswerService::class);
+        $answers = $this->createStub(GroundedAnswerService::class);
         $answers->method('answer')->willReturn(['answer' => 'Jawaban uji.', 'citations' => []]);
-        $this->app->instance(DocumentGroundedAnswerService::class, $answers);
+        $this->app->instance(GroundedAnswerService::class, $answers);
     }
 
     public function test_only_active_admins_can_access_the_assistant(): void
@@ -40,9 +40,9 @@ class AiConversationTest extends TestCase
         Http::preventStrayRequests();
         $owner = User::factory()->create(['role' => 'admin', 'is_active' => true]);
         $other = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
-        $answers = $this->createMock(DocumentGroundedAnswerService::class);
+        $answers = $this->createMock(GroundedAnswerService::class);
         $answers->expects($this->once())->method('answer')->willReturn(['answer' => 'Jawaban uji.', 'citations' => []]);
-        $this->app->instance(DocumentGroundedAnswerService::class, $answers);
+        $this->app->instance(GroundedAnswerService::class, $answers);
         $created = $this->actingAs($owner)->post('/assistant/conversations', []);
         $created->assertRedirect();
         $id = basename($created->headers->get('Location'));
@@ -87,9 +87,9 @@ class AiConversationTest extends TestCase
 
     public function test_owner_can_delete_conversation_with_cascade_and_retry_of_same_request_id(): void
     {
-        $answers = $this->createStub(DocumentGroundedAnswerService::class);
+        $answers = $this->createStub(GroundedAnswerService::class);
         $answers->method('answer')->willReturn(['answer' => 'Jawaban uji.', 'citations' => []]);
-        $this->app->instance(DocumentGroundedAnswerService::class, $answers);
+        $this->app->instance(GroundedAnswerService::class, $answers);
         $owner = User::factory()->create(['role' => 'admin', 'is_active' => true]);
         $this->actingAs($owner)->post('/assistant/conversations', [])->assertRedirect();
         $id = basename((string) $this->post('/assistant/conversations', [])->headers->get('Location'));

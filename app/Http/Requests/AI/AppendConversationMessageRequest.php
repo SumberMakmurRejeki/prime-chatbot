@@ -14,6 +14,14 @@ class AppendConversationMessageRequest extends FormRequest
         return true;
     }
 
+    /** @return array<string, string> */
+    public function messages(): array
+    {
+        return [
+            'message.required' => 'Pesan wajib diisi.',
+        ];
+    }
+
     /** @return array<string, array<int, string>> */
     public function rules(): array
     {

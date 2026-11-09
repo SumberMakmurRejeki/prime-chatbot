@@ -19,6 +19,7 @@ use App\Services\AI\VectorStore\VectorChunk;
 use App\Services\AI\VectorStore\VectorSpace;
 use App\Services\AI\VectorStore\VectorStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -137,6 +138,190 @@ class KnowledgeDocumentLifecycleTest extends TestCase
         ]], $store->activations);
     }
 
+    public function test_publishing_new_revision_supersedes_previous_revision_without_losing_history(): void
+    {
+        Storage::fake('local');
+        $revision = $this->activateEmbeddingRevision();
+        $store = new KnowledgeDocumentTestVectorStore;
+        $this->app->instance(VectorStore::class, $store);
+        $this->fakeEmbeddingProvider();
+        $vectorSpaceIdentity = 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine';
+        $readyAttributes = [
+            'status' => 'ready',
+            'vector_space_identity' => $vectorSpaceIdentity,
+            'chunk_count' => 1,
+            'page_count' => 1,
+            'pipeline_fingerprint' => 'known-fingerprint',
+            'processed_at' => now(),
+        ];
+        $revisionTwo = $this->storedDocument($readyAttributes + [
+            'document_code' => 'SOP-UPCAST-001',
+            'version' => 'Rev.02',
+            'checksum' => hash('sha256', 'rev-02'),
+        ]);
+        $revisionThree = $this->storedDocument($readyAttributes + [
+            'document_code' => 'SOP-UPCAST-001',
+            'version' => 'Rev.03',
+            'checksum' => hash('sha256', 'rev-03'),
+        ]);
+        $otherSop = $this->storedDocument($readyAttributes + [
+            'document_code' => 'SOP-OTHER-001',
+            'version' => 'Rev.01',
+            'checksum' => hash('sha256', 'other-sop'),
+        ]);
+        $publisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+        $service = app(KnowledgeDocumentService::class);
+        $service->publish($revisionTwo->id, $publisher->id);
+        $service->publish($otherSop->id, $publisher->id);
+
+        $publishedRevision = $service->publish($revisionThree->id, $publisher->id);
+
+        $this->assertTrue($publishedRevision->is_published);
+        $this->assertFalse($revisionTwo->fresh()->is_published);
+        $this->assertSame($publisher->id, $revisionTwo->fresh()->published_by);
+        $this->assertNotNull($revisionTwo->fresh()->published_at);
+        $this->assertSame(1, KnowledgeDocument::query()->where('document_code', 'SOP-UPCAST-001')->where('is_published', true)->count());
+        $this->assertTrue($otherSop->fresh()->is_published);
+        $this->assertSame('ready', $revisionTwo->fresh()->status);
+        $this->assertSame('Rev.02', $revisionTwo->fresh()->version);
+        $this->assertSame([
+            ['space' => $vectorSpaceIdentity, 'documentId' => 'SOP-UPCAST-001', 'version' => 'Rev.02', 'active' => true],
+            ['space' => $vectorSpaceIdentity, 'documentId' => 'SOP-OTHER-001', 'version' => 'Rev.01', 'active' => true],
+            ['space' => $vectorSpaceIdentity, 'documentId' => 'SOP-UPCAST-001', 'version' => 'Rev.03', 'active' => true],
+        ], $store->activations);
+    }
+
+    public function test_current_revision_cannot_be_published_twice_and_publication_failure_preserves_current_revision(): void
+    {
+        Storage::fake('local');
+        $revision = $this->activateEmbeddingRevision();
+        $store = new KnowledgeDocumentTestVectorStore;
+        $this->app->instance(VectorStore::class, $store);
+        $this->fakeEmbeddingProvider();
+        $vectorSpaceIdentity = 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine';
+        $publisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+        $current = $this->storedDocument([
+            'document_code' => 'SOP-UPCAST-001',
+            'version' => 'Rev.02',
+            'checksum' => hash('sha256', 'rev-02-failure-case'),
+            'status' => 'ready',
+            'is_published' => true,
+            'published_at' => now()->subDay(),
+            'published_by' => $publisher->id,
+            'vector_space_identity' => $vectorSpaceIdentity,
+        ]);
+        $candidate = $this->storedDocument([
+            'document_code' => 'SOP-UPCAST-001',
+            'version' => 'Rev.03',
+            'checksum' => hash('sha256', 'rev-03-failure-case'),
+            'status' => 'ready',
+            'vector_space_identity' => $vectorSpaceIdentity,
+        ]);
+        $service = app(KnowledgeDocumentService::class);
+        $publishedAt = $current->published_at->toISOString();
+
+        try {
+            $service->publish($current->id, $publisher->id);
+            $this->fail('An already-current revision must remain non-republishable.');
+        } catch (\DomainException) {
+            $this->assertTrue($current->fresh()->is_published);
+        }
+
+        $store->activationFailure = new \RuntimeException('Vector activation failed.');
+        try {
+            $service->publish($candidate->id, $publisher->id);
+            $this->fail('A vector activation failure must abort publication.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Vector activation failed.', $exception->getMessage());
+        }
+
+        $this->assertTrue($current->fresh()->is_published);
+        $this->assertSame($publishedAt, $current->fresh()->published_at->toISOString());
+        $this->assertSame($publisher->id, $current->fresh()->published_by);
+        $this->assertFalse($candidate->fresh()->is_published);
+        $this->assertNull($candidate->fresh()->published_at);
+    }
+
+    public function test_publication_locks_same_code_revisions_in_stable_order_before_activation(): void
+    {
+        Storage::fake('local');
+        $revision = $this->activateEmbeddingRevision();
+        $store = new KnowledgeDocumentTestVectorStore;
+        $this->app->instance(VectorStore::class, $store);
+        $this->fakeEmbeddingProvider();
+        $vectorSpaceIdentity = 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine';
+        $this->storedDocument([
+            'document_code' => 'SOP-UPCAST-001',
+            'version' => 'Rev.02',
+            'checksum' => hash('sha256', 'rev-02-lock-test'),
+            'status' => 'ready',
+            'is_published' => true,
+            'vector_space_identity' => $vectorSpaceIdentity,
+        ]);
+        $candidate = $this->storedDocument([
+            'document_code' => 'SOP-UPCAST-001',
+            'version' => 'Rev.03',
+            'checksum' => hash('sha256', 'rev-03-lock-test'),
+            'status' => 'ready',
+            'vector_space_identity' => $vectorSpaceIdentity,
+        ]);
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            if (str_contains($query->sql, 'from "knowledge_documents"')) {
+                $queries[] = $query->sql;
+            }
+        });
+
+        app(KnowledgeDocumentService::class)->publish($candidate->id, User::factory()->create()->id);
+
+        $targetLookup = null;
+        $scopeLock = null;
+        foreach ($queries as $index => $sql) {
+            if (str_contains($sql, 'where "knowledge_documents"."id" = ?')) {
+                $targetLookup ??= $index;
+            }
+            if (str_contains($sql, 'where "document_code" = ?')) {
+                $scopeLock ??= $index;
+            }
+        }
+        $this->assertIsInt($targetLookup);
+        $this->assertIsInt($scopeLock);
+        $this->assertLessThan($scopeLock, $targetLookup);
+        $this->assertStringNotContainsString('for update', $queries[$scopeLock]);
+    }
+
+    public function test_reactivating_a_superseded_revision_keeps_its_original_publication_provenance(): void
+    {
+        Storage::fake('local');
+        $revision = $this->activateEmbeddingRevision();
+        $store = new KnowledgeDocumentTestVectorStore;
+        $this->app->instance(VectorStore::class, $store);
+        $this->fakeEmbeddingProvider();
+        $vectorSpaceIdentity = 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine';
+        $readyAttributes = [
+            'document_code' => 'SOP-UPCAST-001',
+            'status' => 'ready',
+            'vector_space_identity' => $vectorSpaceIdentity,
+        ];
+        $revisionTwo = $this->storedDocument($readyAttributes + ['version' => 'Rev.02', 'checksum' => hash('sha256', 'rev-02-rollback')]);
+        $revisionThree = $this->storedDocument($readyAttributes + ['version' => 'Rev.03', 'checksum' => hash('sha256', 'rev-03-rollback')]);
+        $firstPublisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+        $secondPublisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+        $service = app(KnowledgeDocumentService::class);
+        $service->publish($revisionTwo->id, $firstPublisher->id);
+        $originalPublishedAt = $revisionTwo->fresh()->published_at->toISOString();
+        $service->publish($revisionThree->id, $secondPublisher->id);
+
+        $reactivated = $service->publish($revisionTwo->id, $secondPublisher->id);
+
+        $this->assertTrue($reactivated->is_published);
+        $this->assertSame($originalPublishedAt, $reactivated->published_at->toISOString());
+        $this->assertSame($firstPublisher->id, $reactivated->published_by);
+        $this->assertFalse($revisionThree->fresh()->is_published);
+        $this->assertNotNull($revisionThree->fresh()->published_at);
+        $this->assertSame(1, KnowledgeDocument::query()->where('document_code', 'SOP-UPCAST-001')->where('is_published', true)->count());
+    }
+
     public function test_uploaded_document_cannot_be_published_before_indexing(): void
     {
         Storage::fake('local');
@@ -237,6 +422,8 @@ final class KnowledgeDocumentTestVectorStore implements VectorStore
 
     public ?\Throwable $upsertFailure = null;
 
+    public ?\Throwable $activationFailure = null;
+
     public function isReady(): bool
     {
         return true;
@@ -255,6 +442,9 @@ final class KnowledgeDocumentTestVectorStore implements VectorStore
     public function setRetrievalActive(VectorSpace $space, string $documentId, string $documentVersion, bool $active): void
     {
         $this->activations[] = ['space' => $space->identity, 'documentId' => $documentId, 'version' => $documentVersion, 'active' => $active];
+        if ($this->activationFailure !== null) {
+            throw $this->activationFailure;
+        }
     }
 
     public function search(VectorSpace $space, RetrievalQuery $query): array

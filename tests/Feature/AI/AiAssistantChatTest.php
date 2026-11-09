@@ -7,6 +7,8 @@ use App\Models\AiProviderConfigurationRevision;
 use App\Models\KnowledgeDocument;
 use App\Models\User;
 use App\Services\AI\AiEndpointPinner;
+use App\Services\AI\DocumentGroundedAnswerService;
+use App\Services\AI\GroundedAnswerService;
 use App\Services\AI\VectorStore\RetrievalQuery;
 use App\Services\AI\VectorStore\VectorSearchResult;
 use App\Services\AI\VectorStore\VectorSpace;
@@ -28,6 +30,11 @@ class AiAssistantChatTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Berkas ini adalah jaring regresi kode legacy Qdrant: produksi kini
+        // memakai Gemini (lihat binding GroundedAnswerService). Pengikatan
+        // ditunda sampai permintaan dijalankan supaya uji dapat mengganti
+        // VectorStore sebelum resolusi.
+        $this->app->bind(GroundedAnswerService::class, DocumentGroundedAnswerService::class);
 
         $this->admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
         $this->activateChatRevision();

@@ -21,10 +21,8 @@ use Laravel\Ai\Responses\TextResponse;
 use RuntimeException;
 use Throwable;
 
-class DocumentGroundedAnswerService
+class DocumentGroundedAnswerService implements GroundedAnswerService
 {
-    private const ABSTENTION = 'Saya belum dapat memastikan jawaban dari dokumen PDF terbit yang tersedia.';
-
     private const MAX_CONTEXT_BYTES = 18_000;
 
     private const SYSTEM_INSTRUCTIONS = <<<'PROMPT'
@@ -49,6 +47,7 @@ PROMPT;
             if ($evidence['sources'] === []) {
                 return ['answer' => self::ABSTENTION, 'citations' => []];
             }
+
             $response = $this->generate($revision, $question, $evidence['context']);
             if ($response->steps->isEmpty() || $response->steps->contains(static fn ($step): bool => $step->finishReason === FinishReason::Error)) {
                 throw new DocumentAnswerUnavailable;

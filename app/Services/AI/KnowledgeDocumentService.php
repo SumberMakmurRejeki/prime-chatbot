@@ -161,18 +161,33 @@ final class KnowledgeDocumentService
      * Gerbang publikasi eksplisit dengan Owner `manage_ai`:
      * hanya dokumen READY yang boleh menjadi eligible retrieval.
      *
-     * Titik Qdran diaktifkan di dalam transaksi row-lock; bila aktivasi gagal,
-     * transaksi rollback sehingga MySQL tetap unpublished (fail-closed) dan
-     * publish dapat dicoba ulang.
+     * Semua revisi ber-kode sama dikunci (row-lock, urutan id tetap) sebelum
+     * mutasi apa pun, sehingga dua publikasi yang bersamaan tetap menyisakan
+     * satu revisi terpublikasi. Revisi yang digantikan hanya kehilangan flag
+     * is_published; baris, timestamp, dan publisher-nya tetap tersimpan sebagai
+     * bukti historis dan tidak dihapus.
+     *
+     * Titik Qdrant revisi baru diaktifkan di dalam transaksi yang sama; bila
+     * aktivasi gagal, transaksi rollback sehingga MySQL tetap tidak berubah
+     * (fail-closed) dan publish dapat dicoba ulang.
      *
      * @throws DomainException bila state tidak valid atau ruang vektor berganti
      */
     public function publish(int $documentId, int $publisherId): KnowledgeDocument
     {
         return DB::transaction(function () use ($documentId, $publisherId): KnowledgeDocument {
-            $document = KnowledgeDocument::query()->lockForUpdate()->findOrFail($documentId);
+            // document_code tidak pernah berubah setelah unggah, sehingga kode
+            // dapat dibaca tanpa lock untuk menentukan cakupan kunci. Urutan id
+            // tetap memakai urutan kunci yang sama untuk semua publisher.
+            $target = KnowledgeDocument::query()->findOrFail($documentId);
+            $lockedDocuments = KnowledgeDocument::query()
+                ->where('document_code', $target->document_code)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            $document = $lockedDocuments->firstWhere('id', $target->id);
 
-            if ($document->status !== 'ready' || $document->is_published) {
+            if ($document === null || $document->status !== 'ready' || $document->is_published) {
                 throw new DomainException('Hanya dokumen READY yang belum dipublikasikan dapat dipublikasikan.');
             }
 
@@ -190,7 +205,21 @@ final class KnowledgeDocumentService
 
             $this->vectorStore->setRetrievalActive($space, $document->document_code, $document->version, true);
 
-            $document->forceFill(['is_published' => true, 'published_at' => now(), 'published_by' => $publisherId])->save();
+            // Kunci di atas membuat publikasi berkode sama saling menunggu,
+            // sehingga revisi lama tidak mungkin tetap terpublikasi bersamaan.
+            // Titik Qdrant revisi lama sengaja tidak diubah; MySQL yang
+            // mengecualikannya dari evidence meski penandanya masih aktif.
+            KnowledgeDocument::query()
+                ->where('document_code', $document->document_code)
+                ->whereKeyNot($document->getKey())
+                ->where('is_published', true)
+                ->update(['is_published' => false]);
+
+            // Provenance revisi yang pernah dipublikasikan dipertahankan: hanya
+            // flag current yang berubah ketika revisi lama diaktifkan kembali.
+            $document->forceFill($document->published_at === null
+                ? ['is_published' => true, 'published_at' => now(), 'published_by' => $publisherId]
+                : ['is_published' => true])->save();
 
             return $document;
         });

@@ -50,13 +50,16 @@
                         @foreach ($displayMessages as $message)
                             <li class="flex {{ $message['role'] === 'user' ? 'justify-end' : 'justify-start' }}">
                                 <div class="max-w-[90%] rounded-[1.15rem] {{ $message['role'] === 'user' ? 'rounded-br-[0.4rem] bg-[var(--color-prime-primary)] text-white' : 'rounded-bl-[0.4rem] border border-[var(--color-prime-border)] bg-white text-[var(--color-prime-ink)]' }} px-4 py-3 text-base leading-6">
-                                    <p class="whitespace-pre-wrap break-words">{{ $message['content'] }}</p>
+                                    {{-- Jawaban adalah keluaran provider yang tidak dipercaya: hanya penekanan inline Markdown dirender, seluruh HTML lain di-escape. --}}
+                                    @php($messageHtml = trim(\Illuminate\Support\Str::inlineMarkdown($message['content'] ?? '', ['html_input' => 'escape', 'allow_unsafe_links' => false])))
+                                    <p class="whitespace-pre-wrap break-words">{!! $messageHtml !!}</p>
                                     @if ($message['role'] === 'assistant' && $message['citations'] !== [])
                                         <div class="mt-3 border-t border-[var(--color-prime-border)] pt-2 text-sm">
                                             <p class="font-semibold">Sumber</p>
                                             <ul class="mt-1 list-inside list-disc space-y-1">
                                                 @foreach ($message['citations'] as $citation)
-                                                    <li><span class="font-medium">[{{ $citation['source'] ?? 'S'.($loop->index + 1) }}]</span> {{ $citation['title'] }} ({{ $citation['code'] }}), versi {{ $citation['version'] }}@if ($citation['page']), halaman {{ $citation['page'] }}@endif — {{ $citation['locator'] }}, chunk {{ $citation['chunk'] }}</li>
+                                                    {{-- Locator dan chunk tetap tersimpan di meta, tetapi tidak ditampilkan: keduanya identitas teknis provider tanpa nilai bagi Admin. --}}
+                                                    <li><span class="font-medium">[{{ $citation['source'] ?? 'S'.($loop->index + 1) }}]</span> {{ $citation['title'] }} ({{ $citation['code'] }}), versi {{ $citation['version'] }}@if ($citation['page']), halaman {{ $citation['page'] }}@endif</li>
                                                 @endforeach
                                             </ul>
                                         </div>

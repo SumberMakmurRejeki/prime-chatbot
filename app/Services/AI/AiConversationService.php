@@ -21,7 +21,7 @@ class AiConversationService
 
     private const HISTORY_PAGE_SIZE = 25;
 
-    public function __construct(private readonly DocumentGroundedAnswerService $answers) {}
+    public function __construct(private readonly GroundedAnswerService $answers) {}
 
     /** @return MorphMany<Conversation, User> */
     private function ownedConversations(User $user): MorphMany

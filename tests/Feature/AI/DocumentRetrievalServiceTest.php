@@ -5,8 +5,10 @@ namespace Tests\Feature\AI;
 use App\Models\AiProviderConfiguration;
 use App\Models\AiProviderConfigurationRevision;
 use App\Models\KnowledgeDocument;
+use App\Models\User;
 use App\Services\AI\AiEndpointPinner;
 use App\Services\AI\DocumentRetrievalService;
+use App\Services\AI\KnowledgeDocumentService;
 use App\Services\AI\RetrievalEvidenceSelector;
 use App\Services\AI\SecureEmbeddingClient;
 use App\Services\AI\VectorStore\DistanceMetric;
@@ -365,6 +367,41 @@ class DocumentRetrievalServiceTest extends TestCase
         $this->assertSame([], app(DocumentRetrievalService::class)->search('Pertanyaan'));
     }
 
+    public function test_superseded_revision_is_excluded_from_retrieval_even_when_its_vector_point_is_active(): void
+    {
+        $this->activateRevision();
+        $store = new RecordingRetrievalStore;
+        $this->app->instance(VectorStore::class, $store);
+        $this->pinEndpoint();
+        Http::preventStrayRequests();
+        Http::fake(['provider.example.test/v1/embeddings' => Http::response(['data' => [
+            ['index' => 0, 'embedding' => array_fill(0, 3072, 0.1)],
+        ]])]);
+        $publisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+        $revisionTwo = KnowledgeDocument::factory()->create([
+            'document_code' => 'DOC-7',
+            'version' => 'Rev.02',
+        ]);
+        $revisionThree = KnowledgeDocument::factory()->create([
+            'document_code' => 'DOC-7',
+            'version' => 'Rev.03',
+        ]);
+
+        $documents = app(KnowledgeDocumentService::class);
+        $documents->publish($revisionTwo->id, $publisher->id);
+        $documents->publish($revisionThree->id, $publisher->id);
+
+        // Titik Qdrant lama belum dinonaktifkan; MySQL menjadi gerbang penolak.
+        $store->results = [
+            $this->revisionHit('rev-02-point', 'Rev.02'),
+            $this->revisionHit('rev-03-point', 'Rev.03'),
+        ];
+
+        $results = app(DocumentRetrievalService::class)->search('Pertanyaan');
+
+        $this->assertSame(['rev-03-point'], array_map(static fn (VectorSearchResult $result): string => $result->pointId, $results));
+    }
+
     public function test_embedding_provider_failure_retains_the_original_exception(): void
     {
         $revision = $this->activateRevision();
@@ -392,6 +429,30 @@ class DocumentRetrievalServiceTest extends TestCase
             'status' => 'ready',
             'is_published' => true,
         ]);
+    }
+
+    private function revisionHit(string $pointId, string $version): VectorSearchResult
+    {
+        return new VectorSearchResult(
+            $pointId,
+            0.9,
+            'DOC-7',
+            $version,
+            'rag:config-1:revision-1:text-embedding-3-large:3072:cosine',
+            'p1-1',
+            1,
+            'Evidence text for '.$version,
+            [
+                'document_code' => 'DOC-7',
+                'document_version' => $version,
+                'section_identifier' => '3.4',
+                'section_title' => 'Inspection criteria',
+                'page_start' => 1,
+                'page_end' => 1,
+                'chunk_index' => 0,
+                'stable_chunk_identity' => 'stable-'.$version,
+            ],
+        );
     }
 
     private function hit(string $pointId, float $score, int $pageStart, int $pageEnd, int $chunkIndex): VectorSearchResult

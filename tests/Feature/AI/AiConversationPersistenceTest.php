@@ -3,7 +3,7 @@
 namespace Tests\Feature\AI;
 
 use App\Models\User;
-use App\Services\AI\DocumentGroundedAnswerService;
+use App\Services\AI\GroundedAnswerService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -22,9 +22,9 @@ class AiConversationPersistenceTest extends TestCase
         parent::setUp();
 
         $this->admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
-        $answers = $this->createStub(DocumentGroundedAnswerService::class);
+        $answers = $this->createStub(GroundedAnswerService::class);
         $answers->method('answer')->willReturn(['answer' => 'Jawaban uji.', 'citations' => []]);
-        $this->app->instance(DocumentGroundedAnswerService::class, $answers);
+        $this->app->instance(GroundedAnswerService::class, $answers);
     }
 
     public function test_new_chat_creates_exactly_one_owned_conversation_with_server_supplied_identity(): void

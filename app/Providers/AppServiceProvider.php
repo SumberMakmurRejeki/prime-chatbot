@@ -8,6 +8,8 @@ use App\Services\AI\DocumentIngestion\PdfIngestionService;
 use App\Services\AI\DocumentIngestion\PdfTextExtractor;
 use App\Services\AI\DocumentIngestion\TextChunker;
 use App\Services\AI\DocumentIngestion\TextNormalizer;
+use App\Services\AI\GeminiGroundedAnswerService;
+use App\Services\AI\GroundedAnswerService;
 use App\Services\AI\VectorStore\Qdrant\QdrantCollectionInspector;
 use App\Services\AI\VectorStore\Qdrant\QdrantConfig;
 use App\Services\AI\VectorStore\Qdrant\QdrantVectorStore;
@@ -23,6 +25,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        // Jalur SOP chatbot Admin memakai Gemini File Search. Implementasi
+        // Qdrant dipertahankan sebagai kode legacy sampai cutover terverifikasi,
+        // jadi tidak ada fallback otomatis antar penyedia.
+        $this->app->bind(GroundedAnswerService::class, GeminiGroundedAnswerService::class);
         $this->app->bind(VectorStore::class, QdrantVectorStore::class);
         // Layanan kesiapan hanya butuh kemampuan baca collection, bukan seluruh
         // kemampuan mutasi vector store.
