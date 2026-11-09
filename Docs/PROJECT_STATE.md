@@ -13,7 +13,7 @@ dan rencana implementasi dibedakan secara eksplisit.
 | Branch kerja pada checkpoint | `feature/gemini-file-search`; belum dipublikasikan ke `origin` |
 | Commit AI/Gemini pada branch kerja | `f156825`, `d3c7ac0` (2026-11-07), `6d8a507` (2026-11-08, head sebelum finalisasi) |
 | Commit milestone Gemini (finalisasi 2026-11-09) | `0981c39` (`feat(ai): add Gemini File Search indexing provenance and scoped retrieval`) dan `37e82cc` (`feat(ai): bind Admin Assistant to Gemini File Search`); keduanya hanya lokal |
-| Commit dokumentasi status milestone | `741aa70` (`docs: finalize Gemini milestone status and dependency decisions`), HEAD final `741aa70` (2026-11-09); commit lokal, belum dipublikasikan |
+| Commit dokumentasi status milestone | `741aa70` (`docs: finalize Gemini milestone status and dependency decisions`), lalu `7a9d7c9` (checkpoint status). Commit lokal, belum dipublikasikan; `git log` adalah sumber untuk HEAD setelah checkpoint ini |
 | Working tree pada checkpoint | Sisa perubahan lokal yang sengaja tidak di-commit: `.gitignore` (entri `/.playwright-cli/`, artefak runtime agent lokal) dan `Docs/design-system-reference/` (artefak desain, bukan kode kanonis). Ini observasi tertanggal, bukan status permanen |
 | Remote | `origin` → `https://github.com/SumberMakmurRejeki/prime-chatbot.git` |
 
