@@ -113,7 +113,7 @@ class GeminiFileSearchOperationsTest extends TestCase
         $report = app(GeminiFileSearchOperations::class)->importFile(
             'store-1',
             'files/file-1',
-            new GeminiDocumentMetadata('PUMP-02', '1.10'),
+            new GeminiDocumentMetadata('PUMP-02', '1.10', 'g-import-1'),
         );
 
         $this->assertSame(GeminiIndexingState::Pending, $report->state);
@@ -125,6 +125,7 @@ class GeminiFileSearchOperationsTest extends TestCase
             && $request['customMetadata'] === [
                 ['key' => 'document_code', 'stringValue' => 'PUMP-02'],
                 ['key' => 'version', 'stringValue' => '1.10'],
+                ['key' => 'import_identity', 'stringValue' => 'g-import-1'],
             ]);
         Http::assertSentCount(1);
     }
@@ -142,7 +143,7 @@ class GeminiFileSearchOperationsTest extends TestCase
         $report = app(GeminiFileSearchOperations::class)->importFile(
             'store-1',
             'file-1',
-            new GeminiDocumentMetadata('FNC-01', '2.0'),
+            new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-2'),
         );
 
         $this->assertSame(GeminiIndexingState::Completed, $report->state);
@@ -180,7 +181,7 @@ class GeminiFileSearchOperationsTest extends TestCase
         ])]);
 
         try {
-            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0'));
+            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-3'));
             $this->fail('Malformed import response must fail closed.');
         } catch (RuntimeException $exception) {
             $this->assertStringNotContainsString('internal provider detail', $exception->getMessage());
@@ -199,7 +200,7 @@ class GeminiFileSearchOperationsTest extends TestCase
         ])]);
 
         try {
-            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0'));
+            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-4'));
             $this->fail('Completed import without a document identity must fail closed.');
         } catch (RuntimeException $exception) {
             $this->assertStringNotContainsString('file-1', $exception->getMessage());
@@ -219,7 +220,7 @@ class GeminiFileSearchOperationsTest extends TestCase
         ])]);
 
         try {
-            app(GeminiFileSearchOperations::class)->importFile('prime-store-a', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0'));
+            app(GeminiFileSearchOperations::class)->importFile('prime-store-a', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-5'));
             $this->fail('Completed import must not accept a document from another store.');
         } catch (RuntimeException $exception) {
             $this->assertInstanceOf(AiException::class, $exception->getPrevious());
@@ -240,12 +241,35 @@ class GeminiFileSearchOperationsTest extends TestCase
         ])]);
 
         try {
-            app(GeminiFileSearchOperations::class)->importFile('prime-store-a', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0'));
+            app(GeminiFileSearchOperations::class)->importFile('prime-store-a', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-6'));
             $this->fail('Import operation scoped to another store must fail closed.');
         } catch (RuntimeException $exception) {
             $this->assertInstanceOf(AiException::class, $exception->getPrevious());
             $this->assertStringNotContainsString('prime-store-b', $exception->getMessage());
         }
+    }
+
+    public function test_completed_import_normalizes_relative_document_identity(): void
+    {
+        $this->activeRevision();
+        Http::preventStrayRequests();
+        Http::fake([self::BASE_URL.'/fileSearchStores/store-1:importFile' => Http::response([
+            'name' => 'fileSearchStores/store-1/operations/import-7',
+            'done' => true,
+            // Google dapat mengembalikan identifier dokumen saja tanpa prefix
+            // store; bentuk ini tetap sah selama store induknya diketahui.
+            'response' => ['documentName' => 'doc-relative-7'],
+        ])]);
+
+        $report = app(GeminiFileSearchOperations::class)->importFile(
+            'store-1',
+            'file-1',
+            new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-7'),
+        );
+
+        $this->assertSame(GeminiIndexingState::Completed, $report->state);
+        $this->assertSame('fileSearchStores/store-1/documents/doc-relative-7', $report->documentName);
+        Http::assertSentCount(1);
     }
 
     public function test_completed_document_with_malformed_resource_fails_closed(): void
@@ -255,15 +279,35 @@ class GeminiFileSearchOperationsTest extends TestCase
         Http::fake([self::BASE_URL.'/fileSearchStores/store-1:importFile' => Http::response([
             'name' => 'fileSearchStores/store-1/operations/import-7',
             'done' => true,
-            'response' => ['documentName' => 'doc-x'],
+            'response' => ['documentName' => 'documents/doc-x'],
         ])]);
 
         try {
-            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0'));
+            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-7'));
             $this->fail('Malformed completed-document identity must fail closed.');
         } catch (RuntimeException $exception) {
             $this->assertInstanceOf(AiException::class, $exception->getPrevious());
             $this->assertStringNotContainsString('doc-x', $exception->getMessage());
+        }
+
+        Http::assertSentCount(1);
+    }
+
+    public function test_completed_document_with_empty_resource_identifier_fails_closed(): void
+    {
+        $this->activeRevision();
+        Http::preventStrayRequests();
+        Http::fake([self::BASE_URL.'/fileSearchStores/store-1:importFile' => Http::response([
+            'name' => 'fileSearchStores/store-1/operations/import-14',
+            'done' => true,
+            'response' => ['documentName' => 'fileSearchStores/store-1/documents/'],
+        ])]);
+
+        try {
+            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-14'));
+            $this->fail('Empty document identifier must fail closed.');
+        } catch (RuntimeException $exception) {
+            $this->assertInstanceOf(AiException::class, $exception->getPrevious());
         }
 
         Http::assertSentCount(1);
@@ -283,6 +327,41 @@ class GeminiFileSearchOperationsTest extends TestCase
 
         $this->assertSame(GeminiIndexingState::Completed, $report->state);
         $this->assertSame('fileSearchStores/store-1/documents/doc-9', $report->documentName);
+    }
+
+    public function test_polling_normalizes_relative_document_identity_in_the_operations_store(): void
+    {
+        $this->activeRevision();
+        Http::preventStrayRequests();
+        Http::fake([self::BASE_URL.'/fileSearchStores/store-1/operations/import-15' => Http::response([
+            'name' => 'fileSearchStores/store-1/operations/import-15',
+            'done' => true,
+            'response' => ['documentName' => 'doc-relative-15'],
+        ])]);
+
+        $report = app(GeminiFileSearchOperations::class)->inspectIndexing('fileSearchStores/store-1/operations/import-15');
+
+        $this->assertSame(GeminiIndexingState::Completed, $report->state);
+        $this->assertSame('fileSearchStores/store-1/documents/doc-relative-15', $report->documentName);
+    }
+
+    public function test_polling_rejects_relative_document_identity_without_provable_store_scope(): void
+    {
+        $this->activeRevision();
+        Http::preventStrayRequests();
+        Http::fake([self::BASE_URL.'/operations/import-16' => Http::response([
+            'name' => 'operations/import-16',
+            'done' => true,
+            'response' => ['documentName' => 'doc-relative-16'],
+        ])]);
+
+        try {
+            app(GeminiFileSearchOperations::class)->inspectIndexing('operations/import-16');
+            $this->fail('A relative document identity needs a provable operation store scope.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Gemini File Search indexing status could not be read.', $exception->getMessage());
+            $this->assertInstanceOf(AiException::class, $exception->getPrevious());
+        }
     }
 
     public function test_polling_rejects_completed_document_from_another_store(): void
@@ -406,7 +485,7 @@ class GeminiFileSearchOperationsTest extends TestCase
         ], 429)]);
 
         try {
-            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0'));
+            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-8'));
             $this->fail('Rate limited import must fail closed.');
         } catch (RuntimeException $exception) {
             $this->assertSame('Gemini File Search import request failed.', $exception->getMessage());
@@ -422,7 +501,7 @@ class GeminiFileSearchOperationsTest extends TestCase
         Http::preventStrayRequests();
 
         try {
-            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0'));
+            app(GeminiFileSearchOperations::class)->importFile('store-1', 'file-1', new GeminiDocumentMetadata('FNC-01', '2.0', 'g-import-9'));
             $this->fail('Unsafe endpoint must be rejected.');
         } catch (RuntimeException $exception) {
             $this->assertSame('The active Gemini provider endpoint is not allowed.', $exception->getMessage());

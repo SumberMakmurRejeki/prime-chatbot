@@ -27,6 +27,8 @@ final class SecureGeminiStoreGateway extends GeminiStoreGateway
 
     public const VERSION_KEY = 'version';
 
+    public const IMPORT_IDENTITY_KEY = 'import_identity';
+
     public function __construct(ProbeTransportPolicy $policy)
     {
         $this->policy = $policy;
@@ -35,13 +37,18 @@ final class SecureGeminiStoreGateway extends GeminiStoreGateway
     /**
      * Kirim permintaan impor tanpa polling dan tanpa retry.
      *
-     * @param  array{document_code: string, version: string}  $metadata
+     * Ketiga metadata wajib string dan dikirim sebagai stringValue: identitas
+     * impor unik inilah yang menautkan dokumen remote ke baris indeksasi lokal.
+     *
+     * @param  array{document_code: string, version: string, import_identity: string}  $metadata
      * @return array{name: string, done: bool, document_name: ?string, error: ?array<string, mixed>}
      */
     public function importFileOperation(StoreProvider $provider, string $storeId, string $fileId, array $metadata): array
     {
-        if (! is_string($metadata[self::DOCUMENT_CODE_KEY] ?? null) || ! is_string($metadata[self::VERSION_KEY] ?? null)) {
-            throw new AiException('Gemini File Search metadata requires string document_code and version values.');
+        foreach ([self::DOCUMENT_CODE_KEY, self::VERSION_KEY, self::IMPORT_IDENTITY_KEY] as $key) {
+            if (! is_string($metadata[$key] ?? null) || trim($metadata[$key]) === '') {
+                throw new AiException('Gemini File Search metadata requires string document_code, version, and import_identity values.');
+            }
         }
 
         $store = $this->normalizeStoreId($storeId);
@@ -52,10 +59,11 @@ final class SecureGeminiStoreGateway extends GeminiStoreGateway
                 'customMetadata' => [
                     ['key' => self::DOCUMENT_CODE_KEY, 'stringValue' => $metadata[self::DOCUMENT_CODE_KEY]],
                     ['key' => self::VERSION_KEY, 'stringValue' => $metadata[self::VERSION_KEY]],
+                    ['key' => self::IMPORT_IDENTITY_KEY, 'stringValue' => $metadata[self::IMPORT_IDENTITY_KEY]],
                 ],
             ])->throw());
 
-        $operation = $this->parseOperation($response);
+        $operation = $this->parseOperation($response, $store);
 
         $operationStore = $this->storeScope($operation['name']);
 
@@ -80,7 +88,7 @@ final class SecureGeminiStoreGateway extends GeminiStoreGateway
         $response = $this->withErrorHandling($provider->name(), fn () => $this->client($provider)
             ->get($this->baseUrl($provider).'/'.$operationName)->throw());
 
-        $operation = $this->parseOperation($response);
+        $operation = $this->parseOperation($response, $this->storeScope($operationName));
 
         if ($operation['name'] !== $operationName) {
             throw new AiException('Gemini returned an unrelated File Search operation.');
@@ -134,9 +142,12 @@ final class SecureGeminiStoreGateway extends GeminiStoreGateway
     }
 
     /**
+     * Store tujuan yang dipercaya menentukan arti `documentName`; nilainya
+     * `null` bila konteks operasi tidak membuktikan store mana pun.
+     *
      * @return array{name: string, done: bool, document_name: ?string, error: ?array<string, mixed>}
      */
-    private function parseOperation(Response $response): array
+    private function parseOperation(Response $response, ?string $expectedStore): array
     {
         $payload = $response->json();
 
@@ -147,9 +158,8 @@ final class SecureGeminiStoreGateway extends GeminiStoreGateway
 
         $documentName = $payload['response']['documentName'] ?? null;
 
-        if ($documentName !== null
-            && (! is_string($documentName) || preg_match('#^fileSearchStores/[A-Za-z0-9._-]+/documents/[A-Za-z0-9._-]+$#', $documentName) !== 1)) {
-            throw new AiException('Gemini returned an invalid File Search document identity.');
+        if ($documentName !== null) {
+            $documentName = $this->normalizeDocumentName($documentName, $expectedStore);
         }
 
         $error = $payload['error'] ?? null;
@@ -207,13 +217,38 @@ final class SecureGeminiStoreGateway extends GeminiStoreGateway
      */
     private function assertDocumentStore(array $operation, ?string $expectedStore): array
     {
-        if ($operation['error'] === null && $operation['done'] && $operation['document_name'] !== null) {
-            if ($expectedStore === null || ! str_starts_with($operation['document_name'], $expectedStore.'/documents/')) {
-                throw new AiException('Gemini Error: [invalid_response] File Search document belongs to an unverified store.');
-            }
+        if ($operation['error'] === null && $operation['done'] && $operation['document_name'] !== null
+            && ($expectedStore === null || ! str_starts_with($operation['document_name'], $expectedStore.'/documents/'))) {
+            throw new AiException('Gemini Error: [invalid_response] File Search document belongs to an unverified store.');
         }
 
         return $operation;
+    }
+
+    private function isCanonicalDocumentName(string $documentName): bool
+    {
+        return preg_match('#^fileSearchStores/[A-Za-z0-9._-]+/documents/[A-Za-z0-9_-][A-Za-z0-9._-]*$#', $documentName) === 1;
+    }
+
+    /**
+     * Konteks store tepercaya diperlukan untuk mengubah identifier relatif
+     * menjadi resource kanonis; path lain tidak diterima.
+     */
+    private function normalizeDocumentName(mixed $documentName, ?string $expectedStore): string
+    {
+        if (! is_string($documentName)) {
+            throw new AiException('Gemini returned an invalid File Search document identity.');
+        }
+
+        if ($this->isCanonicalDocumentName($documentName)) {
+            return $documentName;
+        }
+
+        if (preg_match('#^([A-Za-z0-9_-][A-Za-z0-9._-]*)$#', $documentName, $matches) !== 1 || $expectedStore === null) {
+            throw new AiException('Gemini returned an invalid File Search document identity.');
+        }
+
+        return $expectedStore.'/documents/'.$matches[1];
     }
 
     private function isOperationName(string $operationName): bool

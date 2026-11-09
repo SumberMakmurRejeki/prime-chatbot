@@ -6,6 +6,7 @@ use Database\Factories\KnowledgeDocumentFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class KnowledgeDocument extends Model
 {
@@ -31,5 +32,10 @@ class KnowledgeDocument extends Model
     public function uploader(): BelongsTo
     {
         return $this->belongsTo(User::class, 'uploaded_by');
+    }
+
+    public function geminiIndex(): HasOne
+    {
+        return $this->hasOne(KnowledgeDocumentGeminiIndex::class);
     }
 }

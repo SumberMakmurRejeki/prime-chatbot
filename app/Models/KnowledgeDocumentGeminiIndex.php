@@ -13,7 +13,8 @@ class KnowledgeDocumentGeminiIndex extends Model
     protected $fillable = [
         'knowledge_document_id', 'document_code', 'document_version', 'document_checksum',
         'store_id', 'google_file_id', 'operation_name', 'google_document_name', 'state',
-        'generation', 'safe_error_code', 'safe_error_message', 'last_checked_at',
+        'generation', 'credential_configuration_id', 'credential_revision_id', 'import_identity',
+        'safe_error_code', 'safe_error_message', 'last_checked_at',
     ];
 
     protected function casts(): array
@@ -21,6 +22,8 @@ class KnowledgeDocumentGeminiIndex extends Model
         return [
             'state' => GeminiDocumentIndexState::class,
             'generation' => 'integer',
+            'credential_configuration_id' => 'integer',
+            'credential_revision_id' => 'integer',
             'last_checked_at' => 'datetime',
         ];
     }

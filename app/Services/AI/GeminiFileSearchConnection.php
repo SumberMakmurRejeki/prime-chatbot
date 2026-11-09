@@ -7,9 +7,8 @@ use App\Services\AI\Gateway\SecureGeminiFileGateway;
 use App\Services\AI\Gateway\SecureGeminiStoreGateway;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
-use Laravel\Ai\AiManager;
 use Laravel\Ai\Enums\Lab;
-use Laravel\Ai\Providers\GeminiProvider;
+use Laravel\Ai\Gateway\Gemini\GeminiGateway;
 use RuntimeException;
 use Throwable;
 
@@ -40,7 +39,23 @@ final class GeminiFileSearchConnection
     /**
      * Bangun instance provider Gemini SDK dari revisi chat aktif.
      */
-    public function resolve(): GeminiProvider
+    public function resolve(): GeminiFileSearchProvider
+    {
+        return $this->resolveWithCredential()['provider'];
+    }
+
+    /**
+     * Satu resolusi yang mengembalikan provider DAN identitas revisi
+     * kredensial yang menyediakannya.
+     *
+     * Provenance harus diambil dari objek ini, bukan dari pemanggilan resolve()
+     * terpisah: revisi chat bisa berpindah di antara dua resolusi, sehingga
+     * membaca ulang sesudah permintaan tidak membuktikan kredensial mana yang
+     * benar-benar dipakai. Nilai yang dikembalikan hanya identitas non-secret.
+     *
+     * @return array{provider: GeminiFileSearchProvider, configuration_id: int, revision_id: int}
+     */
+    public function resolveWithCredential(): array
     {
         $revision = $this->providers->resolve();
 
@@ -65,10 +80,14 @@ final class GeminiFileSearchConnection
         $provider->useFileGateway(new SecureGeminiFileGateway($policy));
         $provider->useStoreGateway(new SecureGeminiStoreGateway($policy));
 
-        return $provider;
+        return [
+            'provider' => $provider,
+            'configuration_id' => (int) $revision->configuration_id,
+            'revision_id' => (int) $revision->id,
+        ];
     }
 
-    private function provider(AiProviderConfigurationRevision $revision): GeminiProvider
+    private function provider(AiProviderConfigurationRevision $revision): GeminiFileSearchProvider
     {
         try {
             // Cast `credential` mendekripsi hanya di sini; nilainya tidak pernah
@@ -89,14 +108,14 @@ final class GeminiFileSearchConnection
                 $configuration['url'] = $revision->base_url;
             }
 
-            /**
-             * Driver Gemini pada laravel/ai v1.2.0 dipetakan ke GeminiProvider,
-             * yang mengimplementasikan kontrak FileProvider, StoreProvider,
-             * dan SupportsFileSearch.
-             *
-             * @var GeminiProvider $provider
-             */
-            $provider = (new AiManager($this->app))->build($configuration);
+            // Konstruksi meniru AiManager::createGeminiDriver() pada laravel/ai
+            // v1.2.0 (GeminiGateway + config + dispatcher) dengan kelas provider
+            // PRIME, agar gateway File/Store aman di bawah tetap terpasang.
+            $provider = new GeminiFileSearchProvider(
+                new GeminiGateway($this->events),
+                [...$configuration, 'name' => 'gemini'],
+                $this->events,
+            );
 
             return $provider;
         } catch (RuntimeException $exception) {

@@ -54,8 +54,9 @@ final class GeminiFileSearchOperations
 
     /**
      * Mulai impor berkas ke store yang sudah ada. Status yang dikembalikan
-     * berasal dari respons impor; operasi yang belum selesai harus diperiksa
-     * lagi lewat inspectIndexing().
+     * berasal dari respons impor; operasi yang belum selesai diperiksa lagi
+     * lewat inspectIndexing(). Provenance berasal dari provider yang benar-benar
+     * mengirim request, bukan dari resolusi terpisah yang berpotensi berganti.
      */
     public function importFile(string $storeId, string $fileId, GeminiDocumentMetadata $metadata): GeminiIndexingReport
     {
@@ -65,7 +66,8 @@ final class GeminiFileSearchOperations
         }
 
         try {
-            $provider = $this->connection->resolve();
+            $connection = $this->connection->resolveWithCredential();
+            $provider = $connection['provider'];
             $operation = $this->secureStoreGateway($provider)
                 ->importFileOperation($provider, $storeId, $fileId, $metadata->toImportMetadata());
         } catch (RuntimeException $exception) {
@@ -74,7 +76,7 @@ final class GeminiFileSearchOperations
             throw new RuntimeException('Gemini File Search import request failed.', 0, $exception);
         }
 
-        return $this->report($operation);
+        return $this->report($operation, $connection['configuration_id'], $connection['revision_id']);
     }
 
     /**
@@ -182,12 +184,14 @@ final class GeminiFileSearchOperations
     /**
      * @param  array{name: string, done: bool, document_name: ?string, error: ?array<string, mixed>}  $operation
      */
-    private function report(array $operation): GeminiIndexingReport
+    private function report(array $operation, ?int $configurationId = null, ?int $revisionId = null): GeminiIndexingReport
     {
         return new GeminiIndexingReport(
             state: GeminiIndexingState::fromOperation($operation),
             operationName: $operation['name'],
             documentName: $operation['document_name'],
+            credentialConfigurationId: $configurationId,
+            credentialRevisionId: $revisionId,
         );
     }
 

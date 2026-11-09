@@ -7,6 +7,8 @@ use App\Models\KnowledgeDocument;
 use App\Models\KnowledgeDocumentGeminiIndex;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Laravel\Ai\Exceptions\AiException;
+use Laravel\Ai\Exceptions\FailoverableException;
 use Throwable;
 
 /**
@@ -321,6 +323,13 @@ final class GeminiDocumentIndexingService
             return $this->fail($index, GeminiDocumentIndexState::Uploaded, 'file_identity_missing', 'Identitas berkas Google tidak tersimpan sehingga impor tidak dapat dilanjutkan.');
         }
 
+        if (! is_string($index->import_identity) || $index->import_identity === '') {
+            // Tanpa identitas generasi, dokumen yang masuk store tidak dapat
+            // dibedakan dari impor lain yang berbagi kode dan versi; impor
+            // dibatalkan sebelum satu pun permintaan tulis dikirim.
+            return $this->fail($index, GeminiDocumentIndexState::Uploaded, 'import_identity_missing', 'Identitas generasi impor tidak tersimpan sehingga impor tidak dapat dilanjutkan.');
+        }
+
         // Impor adalah permintaan tulis tersendiri, jadi akses store diperiksa
         // lagi di sini: baris yang diunggah pada eksekusi sebelumnya tidak boleh
         // menulis ke store yang sudah tidak dapat diakses.
@@ -334,7 +343,7 @@ final class GeminiDocumentIndexingService
             return GeminiIndexingContinuation::Settled;
         }
 
-        $metadata = new GeminiDocumentMetadata($index->document_code, $index->document_version);
+        $metadata = new GeminiDocumentMetadata($index->document_code, $index->document_version, $index->import_identity);
 
         try {
             $report = $this->operations->importFile($index->store_id, $index->google_file_id, $metadata);
@@ -344,10 +353,18 @@ final class GeminiDocumentIndexingService
             return $this->markUnknown($index, GeminiDocumentIndexState::Importing, 'import_outcome_unknown', 'Hasil permintaan impor ke Google tidak diketahui; operasi tidak diulang otomatis.');
         }
 
+        // Provenance ditulis hanya di sini: satu-satunya operasi yang membuat
+        // dokumen di store adalah impor ini, dan nilainya berasal dari resolusi
+        // kredensial yang benar-benar mengirim request tersebut.
+        $provenance = [
+            'credential_configuration_id' => $report->credentialConfigurationId,
+            'credential_revision_id' => $report->credentialRevisionId,
+        ];
+
         return match ($report->state) {
-            GeminiIndexingState::Completed => $this->complete($index, GeminiDocumentIndexState::Importing, $report),
+            GeminiIndexingState::Completed => $this->complete($index, GeminiDocumentIndexState::Importing, $report, $provenance),
             GeminiIndexingState::Failed => $this->fail($index, GeminiDocumentIndexState::Importing, 'import_rejected', 'Google melaporkan impor dokumen gagal.'),
-            GeminiIndexingState::Pending => $this->stashOperation($index, $report),
+            GeminiIndexingState::Pending => $this->stashOperation($index, $report, $provenance),
         };
     }
 
@@ -365,6 +382,20 @@ final class GeminiDocumentIndexingService
             $report = $this->operations->inspectIndexing($operationName);
         } catch (Throwable $exception) {
             $this->logFailure('Gemini File Search indexing status check failed.', $index->knowledge_document_id, $exception);
+
+            // Pelanggaran kontrak respons (AiException biasa dari gateway
+            // aman) bersifat permanen: GET ulang akan menerima payload yang
+            // sama, jadi polling dihentikan. Baris masuk `unknown`, bukan
+            // `failed`, karena restart otomatis bisa mengirim impor kedua ke
+            // store sementara hasil impor aslinya tidak dapat dipercaya.
+            if ($this->isContractViolation($exception)) {
+                return $this->markUnknown(
+                    $index,
+                    GeminiDocumentIndexState::Pending,
+                    'provider_response_invalid',
+                    'Respons status indeksasi Gemini tidak valid; pemeriksaan otomatis dihentikan.',
+                );
+            }
 
             // GET status idempoten: aman diulang sampai batas percobaan job.
             if (! $this->advance($index, GeminiDocumentIndexState::Pending, ['last_checked_at' => now()])) {
@@ -384,10 +415,12 @@ final class GeminiDocumentIndexingService
     /**
      * Simpan identitas operasi impor SEBELUM job kembali ke antrean, supaya
      * pemeriksaan berikutnya tidak pernah mengirim impor baru.
+     *
+     * @param  array<string, int|null>  $provenance
      */
-    private function stashOperation(KnowledgeDocumentGeminiIndex $index, GeminiIndexingReport $report): GeminiIndexingContinuation
+    private function stashOperation(KnowledgeDocumentGeminiIndex $index, GeminiIndexingReport $report, array $provenance): GeminiIndexingContinuation
     {
-        if (! $this->advance($index, GeminiDocumentIndexState::Importing, [
+        if (! $this->advance($index, GeminiDocumentIndexState::Importing, $provenance + [
             'state' => GeminiDocumentIndexState::Pending->value,
             'operation_name' => $report->operationName,
             'last_checked_at' => now(),
@@ -407,7 +440,10 @@ final class GeminiDocumentIndexingService
         return GeminiIndexingContinuation::AwaitRemoteCompletion;
     }
 
-    private function complete(KnowledgeDocumentGeminiIndex $index, GeminiDocumentIndexState $from, GeminiIndexingReport $report): GeminiIndexingContinuation
+    /**
+     * @param  array<string, int|null>  $provenance  hanya diisi pada transisi impor
+     */
+    private function complete(KnowledgeDocumentGeminiIndex $index, GeminiDocumentIndexState $from, GeminiIndexingReport $report, array $provenance = []): GeminiIndexingContinuation
     {
         // Identitas dokumen hanya diterima bila prefix `fileSearchStores/{store}`
         // cocok dengan store tujuan yang disnapshot; metadata provider tidak
@@ -416,9 +452,13 @@ final class GeminiDocumentIndexingService
             return $this->fail($index, $from, 'document_store_mismatch', 'Identitas dokumen Google tidak terverifikasi pada store tujuan.');
         }
 
+        // Pemeriksaan status (pending -> completed) tidak boleh menimpa bukti
+        // kredensial impor; hanya transisi dari impor yang membawa provenance.
+        $attributes = $from === GeminiDocumentIndexState::Importing ? $provenance : [];
+
         // "Selesai" di sini hanya berarti indeks teknis siap; publikasi tetap
         // keputusan Admin terpisah dan tidak pernah dipicu dari sini.
-        $this->advance($index, $from, [
+        $this->advance($index, $from, $attributes + [
             'state' => GeminiDocumentIndexState::Completed->value,
             'google_document_name' => $report->documentName,
             'last_checked_at' => now(),
@@ -443,6 +483,11 @@ final class GeminiDocumentIndexingService
             'generation' => $index->generation + 1,
             'operation_name' => null,
             'google_document_name' => null,
+            // Generasi baru berarti impor baru: identitas dan bukti kredensial
+            // impor lama tidak boleh dipakai ulang untuk dokumen berikutnya.
+            'import_identity' => $this->newImportIdentity(),
+            'credential_configuration_id' => null,
+            'credential_revision_id' => null,
             'safe_error_code' => null,
             'safe_error_message' => null,
             'last_checked_at' => null,
@@ -466,6 +511,16 @@ final class GeminiDocumentIndexingService
     }
 
     /**
+     * Token non-secret per generasi impor. Acak dan unik per baris: dokumen
+     * yang sama diimpor dua kali pun punya token berbeda, dan token tidak
+     * mengandung kredensial, checksum konten, atau rahasia lain.
+     */
+    private function newImportIdentity(): string
+    {
+        return 'g'.bin2hex(random_bytes(24));
+    }
+
+    /**
      * @return array<string, mixed> atribut awal baris indeksasi
      */
     private function scheduledAttributes(KnowledgeDocument $document, ?string $store, ?string $blocker): array
@@ -477,6 +532,7 @@ final class GeminiDocumentIndexingService
             'store_id' => $store,
             'state' => ($blocker === null ? GeminiDocumentIndexState::Queued : GeminiDocumentIndexState::Failed)->value,
             'generation' => 1,
+            'import_identity' => $this->newImportIdentity(),
             'safe_error_code' => $blocker,
             'safe_error_message' => $blocker === null ? null : $this->configurationMessage($blocker),
         ];
@@ -615,5 +671,21 @@ final class GeminiDocumentIndexingService
     {
         // Hanya kelas exception dicatat; pesan provider bisa memuat detail internal.
         Log::error($message, ['knowledge_document_id' => $documentId, 'exception' => $exception::class]);
+    }
+
+    /**
+     * AiException polos dari gateway aman berarti kontrak respons dilanggar
+     * (payload tidak dapat divalidasi); subkelas failoverable seperti
+     * rate-limit atau overload justru sementara dan tetap boleh diulang.
+     */
+    private function isContractViolation(Throwable $exception): bool
+    {
+        for ($cause = $exception; $cause !== null; $cause = $cause->getPrevious()) {
+            if ($cause instanceof AiException && ! $cause instanceof FailoverableException) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
