@@ -6,37 +6,56 @@ use App\Jobs\ProcessKnowledgeDocument;
 use App\Models\AiProviderConfiguration;
 use App\Models\AiProviderConfigurationRevision;
 use App\Models\KnowledgeDocument;
+use App\Models\KnowledgeDocumentGeminiIndex;
 use App\Models\User;
-use App\Services\AI\AiEndpointPinner;
 use App\Services\AI\DocumentIngestion\PdfIngestionConfig;
 use App\Services\AI\DocumentIngestion\PdfIngestionService;
 use App\Services\AI\DocumentIngestion\PdfTextExtractor;
 use App\Services\AI\DocumentIngestion\TextChunker;
 use App\Services\AI\DocumentIngestion\TextNormalizer;
+use App\Services\AI\GeminiDocumentIndexState;
 use App\Services\AI\KnowledgeDocumentService;
-use App\Services\AI\VectorStore\RetrievalQuery;
-use App\Services\AI\VectorStore\VectorChunk;
-use App\Services\AI\VectorStore\VectorSpace;
-use App\Services\AI\VectorStore\VectorStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
+/**
+ * Lifecycle registry Knowledge Base Admin: proses PDF → READY → publikasi.
+ *
+ * Kesiapan proses registry dan kesiapan indeks Gemini sengaja dipisahkan:
+ * proses PDF tidak lagi memakai embedding/Qdrant, sedangkan publikasi hanya
+ * boleh terjadi setelah bukti indeks Gemini File Search terverifikasi.
+ * Seluruh keputusan publikasi hanya membaca keadaan persisten (MySQL dan
+ * konfigurasi Laravel); Http::preventStrayRequests() menjaga kontrak
+ * tanpa-jaringan tersebut.
+ */
 class KnowledgeDocumentLifecycleTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_document_is_indexed_inactive_and_marked_ready_only_after_success(): void
+    private const STORE = 'fileSearchStores/store-prime-dev';
+
+    /** Pesan gerbang publikasi saat bukti indeks Gemini tidak terverifikasi. */
+    private const UNVERIFIED_INDEX_MESSAGE = 'Publikasi ditolak: indeks Gemini File Search dokumen ini belum terverifikasi.';
+
+    private ?AiProviderConfigurationRevision $geminiRevision = null;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Http::preventStrayRequests();
+        config(['gemini_file_search.indexing.store' => 'store-prime-dev']);
+    }
+
+    public function test_document_is_processed_and_marked_ready_without_embedding_provider_or_qdrant(): void
     {
         Storage::fake('local');
-        $revision = $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $this->app->instance(VectorStore::class, $store);
         $this->app->instance(PdfIngestionService::class, $this->ingestionService(['stdout' => "FNC-01 Procedure\nInspect the cooling system and confirm pressure.\n", 'stderr' => '', 'exit_code' => 0]));
-        $this->fakeEmbeddingProvider();
         $document = $this->storedDocument();
 
         app(KnowledgeDocumentService::class)->process($document->id);
@@ -46,22 +65,18 @@ class KnowledgeDocumentLifecycleTest extends TestCase
         $this->assertFalse($document->is_published);
         $this->assertSame(1, $document->chunk_count);
         $this->assertSame(1, $document->page_count);
-        $this->assertSame('rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine', $document->vector_space_identity);
-        $this->assertCount(1, $store->upserts);
-        $this->assertFalse($store->upserts[0]['active']);
-        $this->assertSame($document->checksum, $store->upserts[0]['chunks'][0]->metadata['source_sha256']);
-        $this->assertSame('FNC-01-MANUAL', $store->upserts[0]['documentId']);
-        $this->assertSame('1.0', $store->upserts[0]['version']);
+        $this->assertNotNull($document->processed_at);
+        $this->assertSame(PdfIngestionConfig::fromArray(config('ai.document_ingestion'))->fingerprint(), $document->pipeline_fingerprint);
+        // Jalur Gemini tidak menulis provenance ruang vektor baru; metadata
+        // Qdrant historis tetap apa adanya dan tidak dihapus.
+        $this->assertNull($document->vector_space_identity);
+        Http::assertNothingSent();
     }
 
     public function test_extraction_failure_never_marks_ready_or_discloses_raw_diagnostics(): void
     {
         Storage::fake('local');
-        $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $this->app->instance(VectorStore::class, $store);
         $this->app->instance(PdfIngestionService::class, $this->ingestionService(['stdout' => '', 'stderr' => 'private-credential-value', 'exit_code' => 1]));
-        Http::preventStrayRequests();
         $document = $this->storedDocument();
 
         app(KnowledgeDocumentService::class)->process($document->id);
@@ -69,60 +84,112 @@ class KnowledgeDocumentLifecycleTest extends TestCase
 
         $this->assertSame('failed', $document->status);
         $this->assertSame('ingestion_failed', $document->safe_error_code);
-        $this->assertStringNotContainsString('private-credential-value', $document->safe_error_message);
+        $this->assertStringNotContainsString('private-credential-value', (string) $document->safe_error_message);
         $this->assertFalse($document->is_published);
-        $this->assertSame([], $store->upserts);
+        $this->assertNull($document->processed_at);
         Http::assertNothingSent();
     }
 
-    public function test_indexing_failure_keeps_document_failed_and_retry_reuses_the_same_registry_row(): void
+    public function test_checksum_mismatch_aborts_processing_without_marking_ready(): void
+    {
+        Storage::fake('local');
+        $this->app->instance(PdfIngestionService::class, $this->ingestionService(['stdout' => "FNC-01 Procedure\nInspect the cooling system.\n", 'stderr' => '', 'exit_code' => 0]));
+        $document = $this->storedDocument(['checksum' => hash('sha256', 'not-the-stored-file')]);
+
+        app(KnowledgeDocumentService::class)->process($document->id);
+        $document->refresh();
+
+        $this->assertSame('failed', $document->status);
+        $this->assertSame('processing_failed', $document->safe_error_code);
+        $this->assertNull($document->processed_at);
+        $this->assertFalse($document->is_published);
+    }
+
+    public function test_pdf_processing_failure_preserves_current_published_revision_history(): void
+    {
+        Storage::fake('local');
+        $this->activateGeminiRevision();
+        $publisher = $this->adminPublisher();
+        $current = $this->publishedRevision('SOP-PROCESS-FAIL-001', $publisher);
+        $publishedAt = $current->published_at->toISOString();
+        $candidate = $this->storedDocument([
+            'document_code' => 'SOP-PROCESS-FAIL-001',
+            'version' => 'Rev.03',
+            'checksum' => hash('sha256', 'processing-failure-candidate'),
+        ]);
+        $this->app->instance(PdfIngestionService::class, $this->ingestionService(['stdout' => '', 'stderr' => 'invalid PDF text', 'exit_code' => 1]));
+
+        app(KnowledgeDocumentService::class)->process($candidate->id);
+
+        $this->assertSame('failed', $candidate->fresh()->status);
+        $this->assertFalse($candidate->fresh()->is_published);
+        $this->assertNull($candidate->fresh()->published_at);
+        $this->assertTrue($current->fresh()->is_published);
+        $this->assertSame($publishedAt, $current->fresh()->published_at->toISOString());
+        $this->assertSame($publisher->id, $current->fresh()->published_by);
+        $this->assertSame(1, KnowledgeDocument::query()
+            ->where('document_code', 'SOP-PROCESS-FAIL-001')
+            ->where('is_published', true)
+            ->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_processing_failure_keeps_document_failed_and_retry_reuses_the_same_registry_row(): void
     {
         Queue::fake();
         Storage::fake('local');
-        $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $store->upsertFailure = new \RuntimeException('secret provider credential must not be surfaced');
-        $this->app->instance(VectorStore::class, $store);
-        $this->app->instance(PdfIngestionService::class, $this->ingestionService(['stdout' => "FNC-01 Procedure\nCheck alignment.\n", 'stderr' => '', 'exit_code' => 0]));
-        $this->fakeEmbeddingProvider();
+        $this->app->instance(PdfIngestionService::class, $this->ingestionService(['stdout' => '', 'stderr' => 'broken', 'exit_code' => 1]));
         $document = $this->storedDocument();
 
         app(KnowledgeDocumentService::class)->process($document->id);
         $failed = $document->fresh();
         $this->assertSame('failed', $failed->status);
-        $this->assertSame('processing_failed', $failed->safe_error_code);
-        $this->assertStringNotContainsString('secret provider credential', $failed->safe_error_message);
+        $this->assertSame('ingestion_failed', $failed->safe_error_code);
         $this->assertFalse($failed->is_published);
-        $this->assertSame(1, KnowledgeDocument::query()->where('document_code', $document->document_code)->where('version', $document->version)->count());
 
-        $store->upsertFailure = null;
+        // Retry tidak membuat versi baru: satu baris registry dipakai ulang.
+        $this->app->instance(PdfIngestionService::class, $this->ingestionService(['stdout' => "FNC-01 Procedure\nCheck alignment.\n", 'stderr' => '', 'exit_code' => 0]));
         app(KnowledgeDocumentService::class)->retry($document->id);
         $this->assertSame('uploaded', $document->fresh()->status);
         Queue::assertPushed(ProcessKnowledgeDocument::class, fn (ProcessKnowledgeDocument $job): bool => $job->documentId === $document->id);
+
         app(KnowledgeDocumentService::class)->process($document->id);
-        $this->assertCount(2, $store->upserts);
-        $this->assertSame(
-            array_map(static fn (VectorChunk $chunk): int|string => $chunk->pointId, $store->upserts[0]['chunks']),
-            array_map(static fn (VectorChunk $chunk): int|string => $chunk->pointId, $store->upserts[1]['chunks']),
-        );
+
+        $this->assertSame('ready', $document->fresh()->status);
+        $this->assertSame(1, KnowledgeDocument::query()
+            ->where('document_code', $document->document_code)
+            ->where('version', $document->version)
+            ->count());
+        Http::assertNothingSent();
     }
 
-    public function test_only_ready_document_is_published_and_vector_points_are_activated(): void
+    public function test_processed_and_indexed_document_never_publishes_itself(): void
     {
         Storage::fake('local');
-        $revision = $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $this->app->instance(VectorStore::class, $store);
-        $this->fakeEmbeddingProvider();
-        $document = $this->storedDocument([
-            'status' => 'ready',
-            'vector_space_identity' => 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine',
-            'chunk_count' => 1,
-            'page_count' => 1,
-            'pipeline_fingerprint' => 'known-fingerprint',
-            'processed_at' => now(),
-        ]);
-        $publisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+        $this->activateGeminiRevision();
+        $this->app->instance(PdfIngestionService::class, $this->ingestionService(['stdout' => "FNC-01 Procedure\nInspect the cooling system.\n", 'stderr' => '', 'exit_code' => 0]));
+        $document = $this->storedDocument();
+
+        app(KnowledgeDocumentService::class)->process($document->id);
+        $document->refresh();
+        $this->assertFalse($document->is_published);
+
+        $this->completedIndex($document);
+
+        // Indeksasi selesai pun bukan otorisasi publikasi; hanya aksi Admin.
+        $this->assertFalse($document->refresh()->is_published);
+        $this->assertNull($document->published_at);
+        $this->assertNull($document->published_by);
+        Http::assertNothingSent();
+    }
+
+    public function test_completed_index_with_matching_provenance_permits_admin_publication(): void
+    {
+        Storage::fake('local');
+        $this->activateGeminiRevision();
+        $document = $this->storedDocument(['status' => 'ready']);
+        $index = $this->completedIndex($document);
+        $publisher = $this->adminPublisher();
 
         $published = app(KnowledgeDocumentService::class)->publish($document->id, $publisher->id);
 
@@ -130,216 +197,307 @@ class KnowledgeDocumentLifecycleTest extends TestCase
         $this->assertSame('ready', $published->status);
         $this->assertSame($publisher->id, $published->published_by);
         $this->assertNotNull($published->published_at);
-        $this->assertSame([[
-            'space' => 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine',
-            'documentId' => 'FNC-01-MANUAL',
-            'version' => '1.0',
-            'active' => true,
-        ]], $store->activations);
+        // Publikasi hanya membaca bukti indeks; baris indeksasi tidak berubah,
+        // bukan dibuat ulang dan bukan dimundurkan.
+        $this->assertSame(GeminiDocumentIndexState::Completed, $index->fresh()->state);
+        $this->assertSame($index->import_identity, $index->fresh()->import_identity);
+        $this->assertSame(1, KnowledgeDocumentGeminiIndex::query()->count());
+        Http::assertNothingSent();
     }
 
-    public function test_publishing_new_revision_supersedes_previous_revision_without_losing_history(): void
+    public function test_unfinished_or_uncertain_indexing_blocks_publication_and_preserves_current_revision(): void
     {
         Storage::fake('local');
-        $revision = $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $this->app->instance(VectorStore::class, $store);
-        $this->fakeEmbeddingProvider();
-        $vectorSpaceIdentity = 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine';
-        $readyAttributes = [
-            'status' => 'ready',
-            'vector_space_identity' => $vectorSpaceIdentity,
-            'chunk_count' => 1,
-            'page_count' => 1,
-            'pipeline_fingerprint' => 'known-fingerprint',
-            'processed_at' => now(),
-        ];
-        $revisionTwo = $this->storedDocument($readyAttributes + [
-            'document_code' => 'SOP-UPCAST-001',
-            'version' => 'Rev.02',
-            'checksum' => hash('sha256', 'rev-02'),
-        ]);
-        $revisionThree = $this->storedDocument($readyAttributes + [
-            'document_code' => 'SOP-UPCAST-001',
-            'version' => 'Rev.03',
-            'checksum' => hash('sha256', 'rev-03'),
-        ]);
-        $otherSop = $this->storedDocument($readyAttributes + [
-            'document_code' => 'SOP-OTHER-001',
-            'version' => 'Rev.01',
-            'checksum' => hash('sha256', 'other-sop'),
-        ]);
-        $publisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+        $this->activateGeminiRevision();
+        $publisher = $this->adminPublisher();
         $service = app(KnowledgeDocumentService::class);
-        $service->publish($revisionTwo->id, $publisher->id);
-        $service->publish($otherSop->id, $publisher->id);
 
-        $publishedRevision = $service->publish($revisionThree->id, $publisher->id);
+        foreach ([GeminiDocumentIndexState::Pending, GeminiDocumentIndexState::Failed, GeminiDocumentIndexState::Unknown] as $state) {
+            $current = $this->storedDocument([
+                'document_code' => 'SOP-INDEX-'.$state->value,
+                'version' => 'Rev.02',
+                'checksum' => hash('sha256', 'current-'.$state->value),
+                'status' => 'ready',
+            ]);
+            $this->completedIndex($current);
+            $service->publish($current->id, $publisher->id);
+            $publishedAt = $current->fresh()->published_at->toISOString();
 
-        $this->assertTrue($publishedRevision->is_published);
-        $this->assertFalse($revisionTwo->fresh()->is_published);
-        $this->assertSame($publisher->id, $revisionTwo->fresh()->published_by);
-        $this->assertNotNull($revisionTwo->fresh()->published_at);
-        $this->assertSame(1, KnowledgeDocument::query()->where('document_code', 'SOP-UPCAST-001')->where('is_published', true)->count());
-        $this->assertTrue($otherSop->fresh()->is_published);
-        $this->assertSame('ready', $revisionTwo->fresh()->status);
-        $this->assertSame('Rev.02', $revisionTwo->fresh()->version);
-        $this->assertSame([
-            ['space' => $vectorSpaceIdentity, 'documentId' => 'SOP-UPCAST-001', 'version' => 'Rev.02', 'active' => true],
-            ['space' => $vectorSpaceIdentity, 'documentId' => 'SOP-OTHER-001', 'version' => 'Rev.01', 'active' => true],
-            ['space' => $vectorSpaceIdentity, 'documentId' => 'SOP-UPCAST-001', 'version' => 'Rev.03', 'active' => true],
-        ], $store->activations);
+            $candidate = $this->storedDocument([
+                'document_code' => 'SOP-INDEX-'.$state->value,
+                'version' => 'Rev.03',
+                'checksum' => hash('sha256', 'candidate-'.$state->value),
+                'status' => 'ready',
+            ]);
+            $this->completedIndex($candidate, ['state' => $state->value]);
+
+            $this->assertPublicationRejected($candidate->id, $publisher->id);
+
+            // Pengganti gagal tidak boleh menyentuh revisi terbit saat ini.
+            $this->assertTrue($current->fresh()->is_published);
+            $this->assertSame($publishedAt, $current->fresh()->published_at->toISOString());
+            $this->assertSame($publisher->id, $current->fresh()->published_by);
+            $this->assertFalse($candidate->fresh()->is_published);
+            $this->assertNull($candidate->fresh()->published_at);
+        }
+
+        Http::assertNothingSent();
     }
 
-    public function test_current_revision_cannot_be_published_twice_and_publication_failure_preserves_current_revision(): void
+    public function test_credential_revision_mismatch_blocks_publication_and_preserves_current_revision(): void
     {
         Storage::fake('local');
-        $revision = $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $this->app->instance(VectorStore::class, $store);
-        $this->fakeEmbeddingProvider();
-        $vectorSpaceIdentity = 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine';
-        $publisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
-        $current = $this->storedDocument([
-            'document_code' => 'SOP-UPCAST-001',
-            'version' => 'Rev.02',
-            'checksum' => hash('sha256', 'rev-02-failure-case'),
-            'status' => 'ready',
-            'is_published' => true,
-            'published_at' => now()->subDay(),
-            'published_by' => $publisher->id,
-            'vector_space_identity' => $vectorSpaceIdentity,
-        ]);
-        $candidate = $this->storedDocument([
-            'document_code' => 'SOP-UPCAST-001',
-            'version' => 'Rev.03',
-            'checksum' => hash('sha256', 'rev-03-failure-case'),
-            'status' => 'ready',
-            'vector_space_identity' => $vectorSpaceIdentity,
-        ]);
-        $service = app(KnowledgeDocumentService::class);
+        $original = $this->activateGeminiRevision();
+        $publisher = $this->adminPublisher();
+        $current = $this->publishedRevision('SOP-ROTATE-001', $publisher);
         $publishedAt = $current->published_at->toISOString();
 
-        try {
-            $service->publish($current->id, $publisher->id);
-            $this->fail('An already-current revision must remain non-republishable.');
-        } catch (\DomainException) {
-            $this->assertTrue($current->fresh()->is_published);
-        }
+        // Rotasi kredensial: revisi yang mengesahkan impor tidak lagi aktif.
+        $this->rotateGeminiRevision($original, 'fictional-rotated-gemini-key');
+        Http::preventStrayRequests();
 
-        $store->activationFailure = new \RuntimeException('Vector activation failed.');
-        try {
-            $service->publish($candidate->id, $publisher->id);
-            $this->fail('A vector activation failure must abort publication.');
-        } catch (\RuntimeException $exception) {
-            $this->assertSame('Vector activation failed.', $exception->getMessage());
-        }
+        $candidate = $this->storedDocument([
+            'document_code' => 'SOP-ROTATE-001',
+            'version' => 'Rev.03',
+            'checksum' => hash('sha256', 'rotate-candidate'),
+            'status' => 'ready',
+        ]);
+        $this->completedIndex($candidate);
+
+        $this->assertPublicationRejected($candidate->id, $publisher->id);
 
         $this->assertTrue($current->fresh()->is_published);
         $this->assertSame($publishedAt, $current->fresh()->published_at->toISOString());
         $this->assertSame($publisher->id, $current->fresh()->published_by);
         $this->assertFalse($candidate->fresh()->is_published);
         $this->assertNull($candidate->fresh()->published_at);
+        Http::assertNothingSent();
     }
 
-    public function test_publication_locks_same_code_revisions_in_stable_order_before_activation(): void
+    public function test_store_identity_mismatch_blocks_publication_and_preserves_current_revision(): void
     {
         Storage::fake('local');
-        $revision = $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $this->app->instance(VectorStore::class, $store);
-        $this->fakeEmbeddingProvider();
-        $vectorSpaceIdentity = 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine';
-        $this->storedDocument([
-            'document_code' => 'SOP-UPCAST-001',
-            'version' => 'Rev.02',
-            'checksum' => hash('sha256', 'rev-02-lock-test'),
-            'status' => 'ready',
-            'is_published' => true,
-            'vector_space_identity' => $vectorSpaceIdentity,
-        ]);
+        $this->activateGeminiRevision();
+        $publisher = $this->adminPublisher();
+        $current = $this->publishedRevision('SOP-STORE-001', $publisher);
+        $publishedAt = $current->published_at->toISOString();
+
         $candidate = $this->storedDocument([
-            'document_code' => 'SOP-UPCAST-001',
+            'document_code' => 'SOP-STORE-001',
             'version' => 'Rev.03',
-            'checksum' => hash('sha256', 'rev-03-lock-test'),
+            'checksum' => hash('sha256', 'store-candidate'),
             'status' => 'ready',
-            'vector_space_identity' => $vectorSpaceIdentity,
         ]);
-        $queries = [];
-        DB::listen(static function ($query) use (&$queries): void {
-            if (str_contains($query->sql, 'from "knowledge_documents"')) {
-                $queries[] = $query->sql;
-            }
-        });
+        $this->completedIndex($candidate, [
+            'store_id' => 'fileSearchStores/store-old',
+            'google_document_name' => 'fileSearchStores/store-old/documents/store-old-doc',
+        ]);
 
-        app(KnowledgeDocumentService::class)->publish($candidate->id, User::factory()->create()->id);
+        $this->assertPublicationRejected($candidate->id, $publisher->id);
 
-        $targetLookup = null;
-        $scopeLock = null;
-        foreach ($queries as $index => $sql) {
-            if (str_contains($sql, 'where "knowledge_documents"."id" = ?')) {
-                $targetLookup ??= $index;
-            }
-            if (str_contains($sql, 'where "document_code" = ?')) {
-                $scopeLock ??= $index;
-            }
-        }
-        $this->assertIsInt($targetLookup);
-        $this->assertIsInt($scopeLock);
-        $this->assertLessThan($scopeLock, $targetLookup);
-        $this->assertStringNotContainsString('for update', $queries[$scopeLock]);
+        $this->assertTrue($current->fresh()->is_published);
+        $this->assertSame($publishedAt, $current->fresh()->published_at->toISOString());
+        $this->assertFalse($candidate->fresh()->is_published);
+        $this->assertNull($candidate->fresh()->published_at);
+        Http::assertNothingSent();
     }
 
-    public function test_reactivating_a_superseded_revision_keeps_its_original_publication_provenance(): void
+    public function test_publication_route_shows_safe_indonesian_error_for_unverified_index(): void
     {
         Storage::fake('local');
-        $revision = $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $this->app->instance(VectorStore::class, $store);
-        $this->fakeEmbeddingProvider();
-        $vectorSpaceIdentity = 'rag:config-'.$revision->configuration_id.':revision-'.$revision->id.':text-embedding-3-large:3072:cosine';
-        $readyAttributes = [
-            'document_code' => 'SOP-UPCAST-001',
+        $this->activateGeminiRevision();
+        $document = $this->storedDocument(['status' => 'ready']);
+        $this->completedIndex($document, ['state' => 'unknown']);
+
+        $this->actingAs($this->adminPublisher())
+            ->post(route('knowledge-documents.publish', ['knowledgeDocument' => $document]))
+            ->assertRedirect(route('knowledge-documents.index'))
+            ->assertSessionHas('flash_error', self::UNVERIFIED_INDEX_MESSAGE);
+
+        // Penolakan terjadi sebelum mutasi apa pun: dokumen tetap draf, tanpa
+        // timestamp atau aktor publikasi.
+        $this->assertFalse($document->fresh()->is_published);
+        $this->assertNull($document->fresh()->published_at);
+        $this->assertNull($document->fresh()->published_by);
+        Http::assertNothingSent();
+    }
+
+    public function test_snapshot_and_import_identity_mismatch_block_publication_without_superseding(): void
+    {
+        Storage::fake('local');
+        $this->activateGeminiRevision();
+        $publisher = $this->adminPublisher();
+        $current = $this->publishedRevision('SOP-STALE-001', $publisher);
+
+        // Checksum registry berubah setelah indeks dibuat: snapshot indeks
+        // tidak lagi menggambarkan dokumen yang sama.
+        $replaced = $this->storedDocument([
+            'document_code' => 'SOP-STALE-001',
+            'version' => 'Rev.03',
+            'checksum' => hash('sha256', 'original-candidate-content'),
             'status' => 'ready',
-            'vector_space_identity' => $vectorSpaceIdentity,
-        ];
-        $revisionTwo = $this->storedDocument($readyAttributes + ['version' => 'Rev.02', 'checksum' => hash('sha256', 'rev-02-rollback')]);
-        $revisionThree = $this->storedDocument($readyAttributes + ['version' => 'Rev.03', 'checksum' => hash('sha256', 'rev-03-rollback')]);
-        $firstPublisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
-        $secondPublisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
-        $service = app(KnowledgeDocumentService::class);
-        $service->publish($revisionTwo->id, $firstPublisher->id);
-        $originalPublishedAt = $revisionTwo->fresh()->published_at->toISOString();
-        $service->publish($revisionThree->id, $secondPublisher->id);
+        ]);
+        $this->completedIndex($replaced);
+        KnowledgeDocument::query()->whereKey($replaced->id)->update(['checksum' => hash('sha256', 'replaced-content')]);
 
-        $reactivated = $service->publish($revisionTwo->id, $secondPublisher->id);
+        // Baris lama tanpa token import identity tidak pernah dipercaya.
+        $legacy = $this->storedDocument([
+            'document_code' => 'SOP-LEGACY-001',
+            'version' => 'Rev.01',
+            'checksum' => hash('sha256', 'legacy-content'),
+            'status' => 'ready',
+        ]);
+        $this->completedIndex($legacy, ['import_identity' => null]);
 
-        $this->assertTrue($reactivated->is_published);
-        $this->assertSame($originalPublishedAt, $reactivated->published_at->toISOString());
-        $this->assertSame($firstPublisher->id, $reactivated->published_by);
-        $this->assertFalse($revisionThree->fresh()->is_published);
-        $this->assertNotNull($revisionThree->fresh()->published_at);
-        $this->assertSame(1, KnowledgeDocument::query()->where('document_code', 'SOP-UPCAST-001')->where('is_published', true)->count());
+        $this->assertPublicationRejected($replaced->id, $publisher->id);
+        $this->assertPublicationRejected($legacy->id, $publisher->id);
+
+        $this->assertTrue($current->fresh()->is_published);
+        $this->assertFalse($replaced->fresh()->is_published);
+        $this->assertFalse($legacy->fresh()->is_published);
+        Http::assertNothingSent();
     }
 
-    public function test_uploaded_document_cannot_be_published_before_indexing(): void
+    public function test_publishing_new_revision_supersedes_previous_revision_exactly_once(): void
     {
         Storage::fake('local');
-        $this->activateEmbeddingRevision();
-        $store = new KnowledgeDocumentTestVectorStore;
-        $this->app->instance(VectorStore::class, $store);
-        $document = $this->storedDocument();
-        $publisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+        $this->activateGeminiRevision();
+        $publisher = $this->adminPublisher();
+        $service = app(KnowledgeDocumentService::class);
+
+        $revisionTwo = $this->storedDocument(['document_code' => 'SOP-UPCAST-001', 'version' => 'Rev.02', 'checksum' => hash('sha256', 'rev-02'), 'status' => 'ready']);
+        $this->completedIndex($revisionTwo);
+        $revisionThree = $this->storedDocument(['document_code' => 'SOP-UPCAST-001', 'version' => 'Rev.03', 'checksum' => hash('sha256', 'rev-03'), 'status' => 'ready']);
+        $this->completedIndex($revisionThree);
+        $otherSop = $this->storedDocument(['document_code' => 'SOP-OTHER-001', 'version' => 'Rev.01', 'checksum' => hash('sha256', 'other-sop'), 'status' => 'ready']);
+        $this->completedIndex($otherSop);
+
+        $service->publish($revisionTwo->id, $publisher->id);
+        $service->publish($otherSop->id, $publisher->id);
+
+        $publishedRevision = $service->publish($revisionThree->id, $publisher->id);
+
+        $this->assertTrue($publishedRevision->is_published);
+        // Revisi lama kehilangan flag current tetapi tetap arsip utuh.
+        $this->assertFalse($revisionTwo->fresh()->is_published);
+        $this->assertSame($publisher->id, $revisionTwo->fresh()->published_by);
+        $this->assertNotNull($revisionTwo->fresh()->published_at);
+        $this->assertSame('Rev.02', $revisionTwo->fresh()->version);
+        $this->assertSame(1, KnowledgeDocument::query()
+            ->where('document_code', 'SOP-UPCAST-001')
+            ->where('is_published', true)
+            ->count());
+        $this->assertTrue($otherSop->fresh()->is_published);
+        Http::assertNothingSent();
+    }
+
+    public function test_republishing_the_current_revision_is_rejected_and_keeps_original_provenance(): void
+    {
+        Storage::fake('local');
+        $this->activateGeminiRevision();
+        $publisher = $this->adminPublisher();
+        $current = $this->publishedRevision('SOP-IDEMPOTENT-001', $publisher);
+        $publishedAt = $current->published_at->toISOString();
 
         try {
-            app(KnowledgeDocumentService::class)->publish($document->id, $publisher->id);
-            $this->fail('An uploaded document must not be published.');
+            app(KnowledgeDocumentService::class)->publish($current->id, $publisher->id);
+            $this->fail('Revisi yang sudah terbit tidak boleh dipublikasikan ulang.');
         } catch (\DomainException $exception) {
             $this->assertSame('Hanya dokumen READY yang belum dipublikasikan dapat dipublikasikan.', $exception->getMessage());
         }
 
-        $this->assertSame([], $store->activations);
+        $this->assertTrue($current->fresh()->is_published);
+        $this->assertSame($publishedAt, $current->fresh()->published_at->toISOString());
+        $this->assertSame($publisher->id, $current->fresh()->published_by);
+        Http::assertNothingSent();
+    }
+
+    public function test_non_ready_registry_state_cannot_be_published_even_with_verified_index(): void
+    {
+        Storage::fake('local');
+        $this->activateGeminiRevision();
+        $document = $this->storedDocument(['status' => 'uploaded']);
+        $this->completedIndex($document);
+
+        try {
+            app(KnowledgeDocumentService::class)->publish($document->id, $this->adminPublisher()->id);
+            $this->fail('Dokumen belum READY tidak boleh dipublikasikan.');
+        } catch (\DomainException $exception) {
+            $this->assertSame('Hanya dokumen READY yang belum dipublikasikan dapat dipublikasikan.', $exception->getMessage());
+        }
+
         $this->assertFalse($document->fresh()->is_published);
+        Http::assertNothingSent();
+    }
+
+    public function test_publication_reads_target_then_locks_same_code_scope_before_mutating(): void
+    {
+        Storage::fake('local');
+        $this->activateGeminiRevision();
+        $publisher = $this->adminPublisher();
+        $current = $this->storedDocument(['document_code' => 'SOP-LOCK-001', 'version' => 'Rev.02', 'checksum' => hash('sha256', 'lock-rev-02'), 'status' => 'ready']);
+        $this->completedIndex($current);
+        app(KnowledgeDocumentService::class)->publish($current->id, $publisher->id);
+
+        $candidate = $this->storedDocument(['document_code' => 'SOP-LOCK-001', 'version' => 'Rev.03', 'checksum' => hash('sha256', 'lock-rev-03'), 'status' => 'ready']);
+        $this->completedIndex($candidate);
+
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            if (str_contains($query->sql, 'from "knowledge_documents"') || str_starts_with($query->sql, 'update "knowledge_documents"')) {
+                $queries[] = $query->sql;
+            }
+        });
+
+        app(KnowledgeDocumentService::class)->publish($candidate->id, $publisher->id);
+
+        $targetLookup = null;
+        $scopeLock = null;
+        $firstMutation = null;
+        foreach ($queries as $index => $sql) {
+            if (str_starts_with($sql, 'select') && str_contains($sql, 'where "knowledge_documents"."id" = ?')) {
+                $targetLookup ??= $index;
+            }
+            if (str_starts_with($sql, 'select') && str_contains($sql, 'where "document_code" = ?')) {
+                $scopeLock ??= $index;
+            }
+            if (str_starts_with($sql, 'update')) {
+                $firstMutation ??= $index;
+            }
+        }
+
+        // Kontrak kunci berkode sama: target dibaca tanpa kunci untuk menentukan
+        // cakupan, lalu seluruh revisi berkode sama dibaca terkunci dengan urutan
+        // id yang stabil (bebas deadlock), dan mutasi hanya setelah kunci.
+        // SQLite mengompilasi lockForUpdate() tanpa klausa, jadi urutan baca dan
+        // batas mutasi yang diverifikasi di sini; invarian satu-revisi-terbit
+        // ditegaskan pada test supersede.
+        $this->assertIsInt($targetLookup);
+        $this->assertIsInt($scopeLock);
+        $this->assertIsInt($firstMutation);
+        $this->assertLessThan($scopeLock, $targetLookup);
+        $this->assertLessThan($firstMutation, $scopeLock);
+        $this->assertSame(1, KnowledgeDocument::query()
+            ->where('document_code', 'SOP-LOCK-001')
+            ->where('is_published', true)
+            ->count());
+    }
+
+    public function test_admin_route_publishes_a_verified_revision_and_reports_success(): void
+    {
+        Storage::fake('local');
+        $this->activateGeminiRevision();
+        $document = $this->storedDocument(['status' => 'ready']);
+        $this->completedIndex($document);
+        $publisher = $this->adminPublisher();
+
+        $this->actingAs($publisher)
+            ->post(route('knowledge-documents.publish', ['knowledgeDocument' => $document]))
+            ->assertRedirect(route('knowledge-documents.index'))
+            ->assertSessionHas('flash_success', 'Dokumen siap dan telah dipublikasikan.');
+
+        $this->assertTrue($document->fresh()->is_published);
+        $this->assertSame($publisher->id, $document->fresh()->published_by);
     }
 
     private function storedDocument(array $overrides = []): KnowledgeDocument
@@ -381,76 +539,106 @@ class KnowledgeDocumentLifecycleTest extends TestCase
         );
     }
 
-    private function activateEmbeddingRevision(): AiProviderConfigurationRevision
+    private function adminPublisher(): User
     {
-        $configuration = AiProviderConfiguration::query()->create(['display_name' => 'Embedding', 'purpose' => 'embedding']);
-        $revision = new AiProviderConfigurationRevision;
-        $revision->forceFill([
-            'configuration_id' => $configuration->id,
-            'revision_number' => 1,
-            'driver' => 'openai-compatible',
-            'model_id' => 'text-embedding-3-large',
-            'base_url' => 'https://provider.example.test/v1',
+        return User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
+    }
+
+    /**
+     * Revisi siap ini dipublikasikan lewat gerbang supaya bukti indeks dan
+     * flag current saling konsisten sebelum kandidat pengganti diuji.
+     */
+    private function publishedRevision(string $code, User $publisher, string $version = 'Rev.02'): KnowledgeDocument
+    {
+        $current = $this->storedDocument([
+            'document_code' => $code,
+            'version' => $version,
+            'checksum' => hash('sha256', $code.'-'.$version),
+            'status' => 'ready',
+        ]);
+        $this->completedIndex($current);
+        app(KnowledgeDocumentService::class)->publish($current->id, $publisher->id);
+
+        return $current->refresh();
+    }
+
+    private function assertPublicationRejected(int $candidateId, int $publisherId): void
+    {
+        try {
+            app(KnowledgeDocumentService::class)->publish($candidateId, $publisherId);
+            $this->fail('Publikasi seharusnya ditolak untuk kandidat ini.');
+        } catch (\DomainException $exception) {
+            $this->assertSame(self::UNVERIFIED_INDEX_MESSAGE, $exception->getMessage());
+        }
+    }
+
+    private function activateGeminiRevision(): AiProviderConfigurationRevision
+    {
+        $configuration = AiProviderConfiguration::query()->create(['display_name' => 'Gemini Chat', 'purpose' => 'chat']);
+        $revision = $configuration->revisions()->make([
+            'driver' => 'gemini',
+            'model_id' => 'gemini-3.8-flash',
             'credential' => 'never-output-this',
+            'enabled' => true,
+        ])->forceFill([
+            'revision_number' => 1,
             'test_state' => 'passed',
             'test_attempt_id' => 'attempt-1',
+            'test_started_at' => now(),
             'tested_at' => now(),
-            'tested_embedding_dimensions' => 3072,
-        ])->save();
+        ]);
+        $revision->save();
         $configuration->forceFill(['active_revision_id' => $revision->id])->save();
-        $this->app->instance(AiEndpointPinner::class, new AiEndpointPinner(static fn (string $host): array => ['93.184.216.34']));
+
+        return $this->geminiRevision = $revision;
+    }
+
+    /**
+     * Rotasi kredensial di slot konfigurasi yang sama: revisi baru aktif,
+     * revisi lama tetap tersimpan sebagai bukti provenance impor.
+     */
+    private function rotateGeminiRevision(AiProviderConfigurationRevision $previous, string $credential): AiProviderConfigurationRevision
+    {
+        $configuration = AiProviderConfiguration::query()->findOrFail($previous->configuration_id);
+        $revision = $configuration->revisions()->make([
+            'driver' => 'gemini',
+            'model_id' => 'gemini-3.8-flash',
+            'credential' => $credential,
+            'enabled' => true,
+        ])->forceFill([
+            'revision_number' => 2,
+            'test_state' => 'passed',
+            'test_attempt_id' => 'rotated-attempt-id',
+            'test_started_at' => now(),
+            'tested_at' => now(),
+        ]);
+        $revision->save();
+        $configuration->forceFill(['active_revision_id' => $revision->id])->save();
 
         return $revision;
     }
 
-    private function fakeEmbeddingProvider(): void
+    /**
+     * Baris indeks completed dengan provenance yang sah sesuai konteks uji:
+     * store terkonfigurasi dan revisi kredensial Gemini aktif saat ini.
+     *
+     * @param  array<string, mixed>  $overrides
+     */
+    private function completedIndex(KnowledgeDocument $document, array $overrides = []): KnowledgeDocumentGeminiIndex
     {
-        Http::preventStrayRequests();
-        Http::fake(['provider.example.test/v1/embeddings' => Http::response(['data' => [
-            ['index' => 0, 'embedding' => array_fill(0, 3072, 0.125)],
-        ]])]);
+        return KnowledgeDocumentGeminiIndex::create(array_merge([
+            'knowledge_document_id' => $document->id,
+            'document_code' => $document->document_code,
+            'document_version' => $document->version,
+            'document_checksum' => $document->checksum,
+            'store_id' => self::STORE,
+            'google_file_id' => 'files/synthetic-'.Str::lower(Str::random(8)),
+            'google_document_name' => self::STORE.'/documents/synthetic-'.Str::lower(Str::random(8)),
+            'state' => 'completed',
+            'generation' => 1,
+            'credential_configuration_id' => $this->geminiRevision?->configuration_id,
+            'credential_revision_id' => $this->geminiRevision?->id,
+            'import_identity' => 'g'.bin2hex(random_bytes(24)),
+        ], $overrides));
     }
-}
-
-final class KnowledgeDocumentTestVectorStore implements VectorStore
-{
-    /** @var list<array{space: VectorSpace, documentId: string, version: string, chunks: list<VectorChunk>, active: bool}> */
-    public array $upserts = [];
-
-    /** @var list<array{space: string, documentId: string, version: string, active: bool}> */
-    public array $activations = [];
-
-    public ?\Throwable $upsertFailure = null;
-
-    public ?\Throwable $activationFailure = null;
-
-    public function isReady(): bool
-    {
-        return true;
-    }
-
-    public function ensureCollection(VectorSpace $space): void {}
-
-    public function upsert(VectorSpace $space, string $documentId, string $documentVersion, array $chunks, bool $retrievalActive = true): void
-    {
-        $this->upserts[] = ['space' => $space, 'documentId' => $documentId, 'version' => $documentVersion, 'chunks' => $chunks, 'active' => $retrievalActive];
-        if ($this->upsertFailure !== null) {
-            throw $this->upsertFailure;
-        }
-    }
-
-    public function setRetrievalActive(VectorSpace $space, string $documentId, string $documentVersion, bool $active): void
-    {
-        $this->activations[] = ['space' => $space->identity, 'documentId' => $documentId, 'version' => $documentVersion, 'active' => $active];
-        if ($this->activationFailure !== null) {
-            throw $this->activationFailure;
-        }
-    }
-
-    public function search(VectorSpace $space, RetrievalQuery $query): array
-    {
-        return [];
-    }
-
-    public function deleteVersion(string $documentId, string $documentVersion): void {}
 }

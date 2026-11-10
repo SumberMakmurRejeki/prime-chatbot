@@ -77,6 +77,33 @@ class KnowledgeDocumentUploadTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_publish_route_is_denied_for_operator_and_admin_without_manage_ai(): void
+    {
+        Storage::fake('local');
+        Queue::fake();
+        config(['gemini_file_search.indexing.store' => 'store-prime-dev']);
+        $document = KnowledgeDocument::factory()->create(['status' => 'ready', 'is_published' => false]);
+        $ordinaryAdmin = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => false]);
+        $operator = User::factory()->create(['role' => 'operator', 'is_active' => true, 'manage_ai' => true]);
+
+        $this->actingAs($operator)
+            ->post(route('knowledge-documents.publish', ['knowledgeDocument' => $document]))
+            ->assertRedirect(route('forbidden'));
+
+        $this->actingAs($ordinaryAdmin)
+            ->post(route('knowledge-documents.publish', ['knowledgeDocument' => $document]))
+            ->assertForbidden();
+
+        auth()->logout();
+        $this->post(route('knowledge-documents.publish', ['knowledgeDocument' => $document]))
+            ->assertRedirect(route('login'));
+
+        // Otorisasi ditegakkan di server: tidak ada yang berubah dari percobaan
+        // yang ditolak, termasuk ketika direktorinya tidak diakses lebih dulu.
+        $this->assertFalse($document->fresh()->is_published);
+        $this->assertNull($document->fresh()->published_at);
+    }
+
     public function test_non_pdf_and_oversized_upload_are_rejected(): void
     {
         Storage::fake('local');

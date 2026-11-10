@@ -5,10 +5,14 @@ namespace App\Services\AI;
 use App\Jobs\IndexKnowledgeDocumentInGemini;
 use App\Models\KnowledgeDocument;
 use App\Models\KnowledgeDocumentGeminiIndex;
+use DomainException;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Ai\Exceptions\AiException;
 use Laravel\Ai\Exceptions\FailoverableException;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -35,7 +39,11 @@ final class GeminiDocumentIndexingService
     /** Klaim `uploading`/`importing` yang lebih tua dari ini dianggap proses mati. */
     private const STALE_CLAIM_SECONDS = 600;
 
-    public function __construct(private readonly GeminiFileSearchOperations $operations) {}
+    public function __construct(
+        private readonly GeminiFileSearchOperations $operations,
+        private readonly GeminiRetrievalEligibilityService $eligibility,
+        private readonly GeminiFileSearchConnection $connection,
+    ) {}
 
     public function enabled(): bool
     {
@@ -98,6 +106,120 @@ final class GeminiDocumentIndexingService
     }
 
     /**
+     * Pulihkan indeksasi satu dokumen dengan generation baru. Publikasi dan
+     * pemrosesan registry tidak pernah disentuh di sini.
+     *
+     * Batas aman yang dijaga:
+     * - State dibaca ulang di dalam transaksi dengan lock, sehingga job yang
+     *   berjalan bersamaan tidak dapat menyelip di antara keputusan dan
+     *   perubahan generation.
+     * - Generation baru hanya dibuat untuk baris `failed` yang tidak menyimpan
+     *   satu pun identitas resource Google (berkas, operasi, dokumen): semua
+     *   state lain tidak dipulihkan di sini. Baris yang masih menunjuk dokumen
+     *   di store tidak diubah karena resource lama tidak pernah dihapus
+     *   otomatis; menggantinya hanya menggandakan dokumen.
+     * - Identitas operasi yang tersimpan (impor yang masih menggantung hasil
+     *   tidak pastinya) hanya dilanjutkan lewat pemeriksaan status GET pada
+     *   store yang sama; impor kedua tidak pernah dikirim dan provenance lama
+     *   tidak pernah ditulis ulang.
+     * - Sebelum satu pun permintaan Google, PDF registry harus ada dan byte-nya
+     *   cocok dengan checksum registry, serta kredensial Gemini harus dapat
+     *   diresolusi tanpa jaringan; kegagalan apa pun dilempar tanpa mengubah
+     *   state baris.
+     * - Klaim `uploading`/`importing` hangat ditolak; klaim basi dipindahkan ke
+     *   `unknown` (hasil tulis tetap tidak diulang).
+     *
+     * @throws DomainException bila konfigurasi, sumber, kredensial, atau state
+     *                         baris membuat pemulihan tidak aman atau tidak perlu
+     */
+    public function recover(KnowledgeDocument $document): KnowledgeDocumentGeminiIndex
+    {
+        if (! $this->enabled()) {
+            throw new DomainException('Indeksasi Gemini File Search tidak aktif; pemulihan tidak dijalankan.');
+        }
+
+        $store = $this->configuredStore();
+        $blocker = $this->configurationBlocker($store);
+
+        if ($blocker !== null) {
+            throw new DomainException($this->configurationMessage($blocker));
+        }
+
+        $result = DB::transaction(function () use ($document, $store): KnowledgeDocumentGeminiIndex|DomainException {
+            $currentDocument = KnowledgeDocument::query()->whereKey($document->getKey())->lockForUpdate()->first();
+            $index = KnowledgeDocumentGeminiIndex::query()
+                ->where('knowledge_document_id', $document->getKey())
+                ->lockForUpdate()
+                ->first();
+
+            if ($currentDocument === null || $index === null) {
+                throw new DomainException('Dokumen atau indeksasi Gemini tidak ditemukan.');
+            }
+
+            if (! $this->identityMatches($index, $currentDocument)) {
+                throw new DomainException('Identitas atau checksum dokumen berubah sejak indeksasi dijadwalkan; pemulihan ditolak.');
+            }
+
+            if (in_array($index->state, [GeminiDocumentIndexState::Uploading, GeminiDocumentIndexState::Importing], true)) {
+                // Exception dilempar sesudah commit agar penandaan klaim basi
+                // sebagai unknown tidak ikut dibatalkan.
+                return $this->recoverInFlight($index);
+            }
+
+            if ($index->state === GeminiDocumentIndexState::Completed) {
+                $this->recoverCompletedIndex($currentDocument);
+            }
+
+            // Identitas operasi yang tersimpan hanya dilanjutkan lewat GET.
+            // Jangan menebak scope dari metadata atau mengirim impor kedua.
+            if ($index->operation_name !== null) {
+                if ($index->store_id !== $store
+                    || preg_match('#^'.preg_quote((string) $store, '#').'/operations/[A-Za-z0-9._~-]+$#', $index->operation_name) !== 1
+                    || ! in_array($index->state, [GeminiDocumentIndexState::Pending, GeminiDocumentIndexState::Unknown], true)) {
+                    throw new DomainException('Identitas operasi lama belum aman untuk dilanjutkan.');
+                }
+
+                $this->advance($index, $index->state, ['state' => GeminiDocumentIndexState::Pending->value]);
+
+                return $this->resumeGeneration($index);
+            }
+
+            if ($index->state !== GeminiDocumentIndexState::Failed || $this->hasRemoteIdentity($index)) {
+                throw new DomainException($this->unverifiableOutcomeMessage());
+            }
+
+            // Kolom baru tetap NULL pada generation lama; tidak ada error code
+            // atau timestamp yang dapat membuktikan bahwa generation itu aman
+            // untuk diunggah ulang.
+            if ($index->remote_write_evidence !== GeminiRemoteWriteEvidence::NotStarted) {
+                throw new DomainException($this->unknownWriteEvidenceMessage());
+            }
+
+            $sourceProblem = $this->sourceProblem($currentDocument);
+
+            if ($sourceProblem !== null) {
+                throw new DomainException($this->sourceMessage($sourceProblem));
+            }
+
+            try {
+                // Resolusi lokal memvalidasi satu revisi Gemini aktif, secret,
+                // dan endpoint; provenance tetap hanya lahir dari request impor.
+                $this->connection->resolveWithCredential();
+            } catch (Throwable $exception) {
+                throw new DomainException('Kredensial Gemini aktif tidak terverifikasi; pemulihan ditolak.', 0, $exception);
+            }
+
+            return $this->recoverFailedGeneration($currentDocument, $index, (string) $store);
+        });
+
+        if ($result instanceof DomainException) {
+            throw $result;
+        }
+
+        return $result;
+    }
+
+    /**
      * Jalankan satu tahap indeksasi; hanya dipanggil dari job antrean.
      *
      * Setiap transisi bersyarat pada state dan generation yang tercatat,
@@ -112,12 +234,31 @@ final class GeminiDocumentIndexingService
             return GeminiIndexingContinuation::Settled;
         }
 
+        if (in_array($index->state, [
+            GeminiDocumentIndexState::Completed,
+            GeminiDocumentIndexState::Failed,
+            GeminiDocumentIndexState::Unknown,
+        ], true)) {
+            return GeminiIndexingContinuation::Settled;
+        }
+
+        if (in_array($index->state, [GeminiDocumentIndexState::Uploading, GeminiDocumentIndexState::Importing], true)) {
+            return $this->markUnknown(
+                $index,
+                $index->state,
+                'outcome_unknown',
+                'Percobaan sebelumnya tidak tuntas; hasil di Google tidak diketahui dan tidak diulang otomatis.',
+            );
+        }
+
         $document = $index->knowledgeDocument()->first();
 
         if ($document === null) {
             return $this->fail($index, $index->state, 'document_missing', 'Dokumen registry tidak ditemukan.');
         }
 
+        // Jangan biarkan pemeriksaan identitas atau konfigurasi menghapus
+        // klasifikasi hasil tulis yang tidak pasti menjadi `failed`.
         if (! $this->identityMatches($index, $document)) {
             return $this->fail($index, $index->state, 'document_identity_changed', 'Identitas atau checksum dokumen berubah sejak indeksasi dijadwalkan.');
         }
@@ -134,13 +275,6 @@ final class GeminiDocumentIndexingService
             GeminiDocumentIndexState::Queued => $this->upload($index, $document),
             GeminiDocumentIndexState::Uploaded => $this->import($index),
             GeminiDocumentIndexState::Pending => $this->inspect($index),
-            GeminiDocumentIndexState::Uploading, GeminiDocumentIndexState::Importing => $this->markUnknown(
-                $index,
-                $index->state,
-                'outcome_unknown',
-                'Percobaan sebelumnya tidak tuntas; hasil di Google tidak diketahui dan tidak diulang otomatis.',
-            ),
-            GeminiDocumentIndexState::Completed, GeminiDocumentIndexState::Failed, GeminiDocumentIndexState::Unknown => GeminiIndexingContinuation::Settled,
         };
     }
 
@@ -279,8 +413,12 @@ final class GeminiDocumentIndexingService
             return $this->import($index);
         }
 
-        if (! Storage::disk('local')->exists($document->storage_path)) {
-            return $this->fail($index, GeminiDocumentIndexState::Queued, 'source_missing', 'Berkas PDF sumber tidak ditemukan di storage privat.');
+        $sourceProblem = $this->sourceProblem($document);
+
+        if ($sourceProblem !== null) {
+            // Byte yang tidak cocok dengan registry tidak boleh masuk ke Google:
+            // dokumen di store akan mewakili revisi yang salah.
+            return $this->fail($index, GeminiDocumentIndexState::Queued, $sourceProblem, $this->sourceMessage($sourceProblem));
         }
 
         // Gerbang akses store tepat sebelum klaim dan permintaan unggah; baris
@@ -291,9 +429,16 @@ final class GeminiDocumentIndexingService
             return $blocker;
         }
 
-        // Klaim state sebelum request keluar; bila worker mati setelah ini,
-        // baris berhenti di `uploading` dan tidak mengunggah ulang tanpa izin.
-        if (! $this->advance($index, GeminiDocumentIndexState::Queued, ['state' => GeminiDocumentIndexState::Uploading->value])) {
+        // Klaim state dan bukti tulis disimpan dalam satu update sebelum
+        // request keluar: worker yang mati setelah ini meninggalkan bukti bahwa
+        // unggahan mungkin sudah terkirim, dan bukti itu tidak pernah
+        // diturunkan kembali pada generation yang sama.
+        $claimed = $this->advance($index, GeminiDocumentIndexState::Queued, [
+            'state' => GeminiDocumentIndexState::Uploading->value,
+            'remote_write_evidence' => GeminiRemoteWriteEvidence::MayHaveStarted->value,
+        ]);
+
+        if (! $claimed) {
             return GeminiIndexingContinuation::Settled;
         }
 
@@ -339,7 +484,14 @@ final class GeminiDocumentIndexingService
             return $blocker;
         }
 
-        if (! $this->advance($index, GeminiDocumentIndexState::Uploaded, ['state' => GeminiDocumentIndexState::Importing->value])) {
+        // Impor adalah permintaan tulis tersendiri: bukti tulis disimpan atomik
+        // dengan klaim `importing` sebelum permintaan dikirim.
+        $claimed = $this->advance($index, GeminiDocumentIndexState::Uploaded, [
+            'state' => GeminiDocumentIndexState::Importing->value,
+            'remote_write_evidence' => GeminiRemoteWriteEvidence::MayHaveStarted->value,
+        ]);
+
+        if (! $claimed) {
             return GeminiIndexingContinuation::Settled;
         }
 
@@ -469,33 +621,210 @@ final class GeminiDocumentIndexingService
         return GeminiIndexingContinuation::Settled;
     }
 
-    private function restart(KnowledgeDocument $document, KnowledgeDocumentGeminiIndex $index, string $store): void
+    private function restart(KnowledgeDocument $document, KnowledgeDocumentGeminiIndex $index, string $store): ?KnowledgeDocumentGeminiIndex
     {
-        // generation naik agar job lama yang masih tersisa di antrean langsung
-        // dianggap basi saat dieksekusi, dan berkas yang sudah terunggah dipakai
-        // ulang supaya tidak ada unggahan kedua untuk konten yang sama.
-        if (! $this->advance($index, GeminiDocumentIndexState::Failed, [
-            'document_code' => $document->document_code,
-            'document_version' => $document->version,
-            'document_checksum' => $document->checksum,
-            'store_id' => $store,
-            'state' => ($index->google_file_id === null ? GeminiDocumentIndexState::Queued : GeminiDocumentIndexState::Uploaded)->value,
-            'generation' => $index->generation + 1,
-            'operation_name' => null,
-            'google_document_name' => null,
-            // Generasi baru berarti impor baru: identitas dan bukti kredensial
-            // impor lama tidak boleh dipakai ulang untuk dokumen berikutnya.
-            'import_identity' => $this->newImportIdentity(),
-            'credential_configuration_id' => null,
-            'credential_revision_id' => null,
-            'safe_error_code' => null,
-            'safe_error_message' => null,
-            'last_checked_at' => null,
-        ])) {
-            return;
+        // Arsip dan transisi harus satu transaksi: history tanpa pergantian
+        // generation adalah bukti menyesatkan. Baris dikunci agar snapshot
+        // diambil dari nilai yang benar-benar digantikan, bukan dari copy
+        // yang mungkin basi di memori pemanggil.
+        $restartedIndex = DB::transaction(function () use ($document, $index, $store): ?KnowledgeDocumentGeminiIndex {
+            $current = KnowledgeDocumentGeminiIndex::query()
+                ->whereKey($index->id)
+                ->where('state', GeminiDocumentIndexState::Failed->value)
+                ->where('generation', $index->generation)
+                ->lockForUpdate()
+                ->first();
+
+            if ($current === null) {
+                return null;
+            }
+
+            // Generation baru hanya aman bila generation sebelumnya terbukti
+            // belum menulis dan tidak menyimpan identitas resource Google.
+            // Resource yang masih ada tidak boleh diganti atau diimpor ulang
+            // otomatis karena keduanya dapat meninggalkan dokumen duplikat.
+            if ($this->hasRemoteIdentity($current)
+                || $current->remote_write_evidence !== GeminiRemoteWriteEvidence::NotStarted) {
+                return null;
+            }
+
+            $this->archiveGeneration($current);
+
+            $restarted = $this->advance($current, GeminiDocumentIndexState::Failed, [
+                'document_code' => $document->document_code,
+                'document_version' => $document->version,
+                'document_checksum' => $document->checksum,
+                'store_id' => $store,
+                'state' => GeminiDocumentIndexState::Queued->value,
+                // Generation baru menerima bukti awalnya sendiri; bukti generasi
+                // lama tetap hidup di baris history.
+                'remote_write_evidence' => GeminiRemoteWriteEvidence::NotStarted->value,
+                'generation' => $current->generation + 1,
+                'operation_name' => null,
+                'google_document_name' => null,
+                // Generasi baru berarti impor baru: identitas dan bukti kredensial
+                // impor lama tidak boleh dipakai ulang untuk dokumen berikutnya.
+                'import_identity' => $this->newImportIdentity(),
+                'credential_configuration_id' => null,
+                'credential_revision_id' => null,
+                'safe_error_code' => null,
+                'safe_error_message' => null,
+                'last_checked_at' => null,
+            ]);
+
+            throw_if(! $restarted, RuntimeException::class, 'Transisi generation Gemini gagal setelah baris dikunci.');
+
+            return $current;
+        });
+
+        if ($restartedIndex === null) {
+            return null;
         }
 
+        $this->dispatch($restartedIndex);
+
+        return $restartedIndex;
+    }
+
+    /**
+     * Nilai diambil sebagai atribut mentah (bukan hasil cast) supaya state,
+     * timestamp, dan provenance tersimpan persis seperti di baris aktif —
+     * termasuk NULL, yang tidak boleh diubah menjadi nilai lain.
+     */
+    private function archiveGeneration(KnowledgeDocumentGeminiIndex $index): void
+    {
+        $snapshot = Arr::only($index->getAttributes(), [
+            'knowledge_document_id', 'document_code', 'document_version', 'document_checksum',
+            'store_id', 'google_file_id', 'operation_name', 'google_document_name', 'state',
+            'generation', 'credential_configuration_id', 'credential_revision_id', 'import_identity',
+            'remote_write_evidence', 'safe_error_code', 'safe_error_message', 'last_checked_at',
+        ]);
+
+        DB::table('knowledge_document_gemini_indexing_generations')->insert([
+            ...$snapshot,
+            'knowledge_document_gemini_indexing_id' => $index->getKey(),
+            'current_created_at' => $index->getRawOriginal('created_at'),
+            'current_updated_at' => $index->getRawOriginal('updated_at'),
+            'archived_at' => now(),
+        ]);
+    }
+
+    /**
+     * Lanjutkan generation yang masih berjalan sendiri: `queued` belum menulis
+     * apa pun ke Google, `uploaded` sudah memegang berkas tetapi belum pernah
+     * meminta impor, dan `pending` hanya memeriksa status operasi via GET.
+     */
+    private function resumeGeneration(KnowledgeDocumentGeminiIndex $index): KnowledgeDocumentGeminiIndex
+    {
         $this->dispatch($index);
+
+        return $index;
+    }
+
+    /**
+     * Generation `failed` baru boleh digantikan bila tidak ada satu pun jejak
+     * resource Google: retry yang memakai berkas atau operasi lama berada di
+     * jalur penjadwalan biasa, bukan di pemulihan ini.
+     */
+    private function recoverFailedGeneration(
+        KnowledgeDocument $document,
+        KnowledgeDocumentGeminiIndex $index,
+        string $store,
+    ): KnowledgeDocumentGeminiIndex {
+        if ($this->hasRemoteIdentity($index)) {
+            throw new DomainException('Baris indeksasi masih menyimpan identitas resource Google; generation baru ditolak untuk mencegah resource ganda.');
+        }
+
+        $restarted = $this->restart($document, $index, $store);
+
+        if ($restarted === null) {
+            throw new DomainException('Baris indeksasi berubah saat pemulihan berjalan; ulangi pemulihan setelah status dibaca ulang.');
+        }
+
+        return $restarted;
+    }
+
+    /**
+     * Indeks `completed` tidak dipulihkan: dokumen lama tetap ada di store,
+     * dan generation baru hanya akan menggandakannya tanpa cara membersihkan
+     * yang lama. Indeks yang sudah terverifikasi sama sekali tidak perlu pulih.
+     */
+    private function recoverCompletedIndex(KnowledgeDocument $document): never
+    {
+        if ($this->eligibility->trustedIndexFor($document) !== null) {
+            throw new DomainException('Indeks Gemini dokumen ini sudah terverifikasi; pemulihan tidak diperlukan.');
+        }
+
+        throw new DomainException('Generation lama masih memiliki dokumen di store Google dan tidak dihapus otomatis; generation baru ditolak untuk mencegah resource ganda.');
+    }
+
+    /**
+     * Klaim `uploading`/`importing` berarti satu operasi tulis mungkin sedang
+     * berjalan: klaim hangat ditolak, sedangkan klaim basi milik worker mati
+     * dijadikan `unknown` dan tetap tidak diulang.
+     */
+    private function recoverInFlight(KnowledgeDocumentGeminiIndex $index): DomainException
+    {
+        $this->settleStaleClaim($index);
+
+        return new DomainException(
+            $index->state === GeminiDocumentIndexState::Unknown
+                ? $this->unverifiableOutcomeMessage()
+                : 'Percobaan indeksasi lain masih berjalan; pemulihan tidak dapat dipastikan aman.',
+        );
+    }
+
+    private function unverifiableOutcomeMessage(): string
+    {
+        return 'Hasil generation lama tidak dapat dipastikan; pemulihan tidak dimulai tanpa operasi yang dapat diperiksa.';
+    }
+
+    /**
+     * NULL berarti baris historis tanpa bukti, `may_have_started` berarti
+     * mutasi mungkin sudah dikirim; keduanya tidak memenuhi syarat generation
+     * baru yang aman.
+     */
+    private function unknownWriteEvidenceMessage(): string
+    {
+        return 'Bukti tulis Google pada generation lama tidak diketahui atau tidak menjamin keamanan; pemulihan ditolak tanpa unggahan baru.';
+    }
+
+    /** Identitas resource Google yang tersimpan menandai generation lama masih hidup di sana. */
+    private function hasRemoteIdentity(KnowledgeDocumentGeminiIndex $index): bool
+    {
+        return $index->google_file_id !== null
+            || $index->operation_name !== null
+            || $index->google_document_name !== null;
+    }
+
+    /**
+     * Masalah PDF asli, atau NULL bila berkas ada dan byte-nya masih cocok
+     * dengan checksum registry.
+     */
+    private function sourceProblem(KnowledgeDocument $document): ?string
+    {
+        $disk = Storage::disk('local');
+
+        if (! $disk->exists($document->storage_path)) {
+            return 'source_missing';
+        }
+
+        $checksum = hash_file('sha256', $disk->path($document->storage_path));
+
+        if (! is_string($checksum) || ! hash_equals((string) $document->checksum, $checksum)) {
+            return 'source_checksum_mismatch';
+        }
+
+        return null;
+    }
+
+    private function sourceMessage(string $code): string
+    {
+        return match ($code) {
+            'source_missing' => 'Berkas PDF sumber tidak ditemukan di storage privat; tidak ada permintaan Google yang dikirim.',
+            'source_checksum_mismatch' => 'Checksum berkas PDF sumber tidak cocok dengan checksum registry; tidak ada permintaan Google yang dikirim.',
+            default => 'Berkas PDF sumber tidak dapat diverifikasi; tidak ada permintaan Google yang dikirim.',
+        };
     }
 
     private function settleStaleClaim(KnowledgeDocumentGeminiIndex $index): void
@@ -532,6 +861,7 @@ final class GeminiDocumentIndexingService
             'store_id' => $store,
             'state' => ($blocker === null ? GeminiDocumentIndexState::Queued : GeminiDocumentIndexState::Failed)->value,
             'generation' => 1,
+            'remote_write_evidence' => GeminiRemoteWriteEvidence::NotStarted->value,
             'import_identity' => $this->newImportIdentity(),
             'safe_error_code' => $blocker,
             'safe_error_message' => $blocker === null ? null : $this->configurationMessage($blocker),

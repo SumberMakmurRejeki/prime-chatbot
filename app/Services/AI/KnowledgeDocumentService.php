@@ -7,7 +7,6 @@ use App\Models\KnowledgeDocument;
 use App\Services\AI\DocumentIngestion\DocumentMetadata;
 use App\Services\AI\DocumentIngestion\PdfIngestionException;
 use App\Services\AI\DocumentIngestion\PdfIngestionService;
-use App\Services\AI\VectorStore\VectorStore;
 use DomainException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -19,19 +18,17 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Registry Knowledge Base Admin (AI-4KB1).
+ * Registry Knowledge Base Admin.
  *
- * MySQL adalah sumber kebenaran metadata/lifecycle; storage privat menyimpan
- * PDF asli; Qdrant hanya indeks yang dapat dibangun ulang. Titik Qdrant disimpan
- * non-aktif (retrieval_active=false) hingga dokumen READY dan dipublikasikan.
+ * MySQL adalah sumber kebenaran metadata dan publikasi; storage privat
+ * menyimpan PDF, sedangkan indeks Gemini menjadi bukti turunan yang harus
+ * sudah terverifikasi sebelum revisi baru boleh dipublikasikan.
  */
 final class KnowledgeDocumentService
 {
     public function __construct(
         private readonly PdfIngestionService $ingestion,
-        private readonly DocumentEmbeddingIndexingService $indexing,
-        private readonly EmbeddingRevisionResolver $revisions,
-        private readonly VectorStore $vectorStore,
+        private readonly GeminiRetrievalEligibilityService $geminiEligibility,
     ) {}
 
     /**
@@ -97,10 +94,11 @@ final class KnowledgeDocumentService
     }
 
     /**
-     * Pipeline ungah → proses → READY. Idempoten: dokumen READY dilewati.
+     * Ingest PDF dan tandai registry `ready` setelah seluruh checksum tervalidasi.
      *
-     * Penulisan Qdrant memakai retrieval_active=false sehingga dokumen yang
-     * gagal/belum dipublikasikan tidak pernah dapat diambil Chat RAG.
+     * Status `ready` hanya menyatakan PDF registry telah diproses. Gemini
+     * indexing adalah lifecycle terpisah dan tidak dimulai atau disimpulkan
+     * oleh pemrosesan ini.
      */
     public function process(int $documentId): void
     {
@@ -125,13 +123,11 @@ final class KnowledgeDocumentService
                 throw new RuntimeException('Tidak ada chunk yang dihasilkan dari ekstraksi.');
             }
 
-            // Provenance wajib cocok: checksum hasil ekstraksi harus sama dengan
-            // yang didaftarkan saat ungah, bukti berkas tidak berubah.
+            // Provenance wajib cocok agar hasil ekstraksi tetap menunjuk ke
+            // byte PDF yang didaftarkan saat unggah.
             if ($chunks[0]->sourceSha256 !== $document->checksum) {
                 throw new RuntimeException('Checksum berkas berubah sejak diunggah; proses dibatalkan.');
             }
-
-            $space = $this->indexing->index($chunks, false);
 
             $maxPage = 0;
             foreach ($chunks as $chunk) {
@@ -142,7 +138,6 @@ final class KnowledgeDocumentService
                 'status' => 'ready',
                 'page_count' => $maxPage,
                 'chunk_count' => count($chunks),
-                'vector_space_identity' => $space->identity,
                 'pipeline_fingerprint' => $chunks[0]->pipelineFingerprint,
                 'processed_at' => now(),
                 'safe_error_code' => null,
@@ -158,27 +153,23 @@ final class KnowledgeDocumentService
     }
 
     /**
-     * Gerbang publikasi eksplisit dengan Owner `manage_ai`:
-     * hanya dokumen READY yang boleh menjadi eligible retrieval.
+     * Publikasi Admin eksplisit; bukti indeksasi Gemini dinilai dari state
+     * persisten sebelum revisi saat ini disentuh.
      *
-     * Semua revisi ber-kode sama dikunci (row-lock, urutan id tetap) sebelum
-     * mutasi apa pun, sehingga dua publikasi yang bersamaan tetap menyisakan
-     * satu revisi terpublikasi. Revisi yang digantikan hanya kehilangan flag
-     * is_published; baris, timestamp, dan publisher-nya tetap tersimpan sebagai
-     * bukti historis dan tidak dihapus.
+     * Kunci seluruh revisi berkode sama sebelum mutasi agar publikasi
+     * bersamaan tetap menyisakan satu current revision. Semua verifikasi
+     * berasal dari database/config; transaksi ini tidak menghubungi Gemini.
+     * Revisi yang digantikan kehilangan flag current saja, histori publikasinya
+     * tetap tersimpan.
      *
-     * Titik Qdrant revisi baru diaktifkan di dalam transaksi yang sama; bila
-     * aktivasi gagal, transaksi rollback sehingga MySQL tetap tidak berubah
-     * (fail-closed) dan publish dapat dicoba ulang.
-     *
-     * @throws DomainException bila state tidak valid atau ruang vektor berganti
+     * @throws DomainException bila state registry atau bukti indeks tidak valid
      */
     public function publish(int $documentId, int $publisherId): KnowledgeDocument
     {
         return DB::transaction(function () use ($documentId, $publisherId): KnowledgeDocument {
-            // document_code tidak pernah berubah setelah unggah, sehingga kode
-            // dapat dibaca tanpa lock untuk menentukan cakupan kunci. Urutan id
-            // tetap memakai urutan kunci yang sama untuk semua publisher.
+            // Kode tidak berubah setelah upload. Baca target tanpa lock untuk
+            // menentukan cakupan; semua publisher kemudian mengunci revisi
+            // dalam urutan id yang sama sebelum satu pun mutasi.
             $target = KnowledgeDocument::query()->findOrFail($documentId);
             $lockedDocuments = KnowledgeDocument::query()
                 ->where('document_code', $target->document_code)
@@ -191,32 +182,18 @@ final class KnowledgeDocumentService
                 throw new DomainException('Hanya dokumen READY yang belum dipublikasikan dapat dipublikasikan.');
             }
 
-            if ($document->vector_space_identity === null) {
-                throw new DomainException('Dokumen belum memiliki provenance ruang vektor yang valid.');
+            if ($this->geminiEligibility->trustedIndexFor($document) === null) {
+                throw new DomainException('Publikasi ditolak: indeks Gemini File Search dokumen ini belum terverifikasi.');
             }
 
-            $revision = $this->revisions->resolve();
-            $space = $this->revisions->space($revision);
-            if ($document->vector_space_identity !== $space->identity) {
-                // Ruangembedding aktif berganti sejak index dengan dokumen ini;
-                // titik milik dokumen tidak boleh diaktifkan di space baru.
-                throw new DomainException('Dokumen tereindeks pada ruang vektor yang berbeda; proses ulang dokumen.');
-            }
-
-            $this->vectorStore->setRetrievalActive($space, $document->document_code, $document->version, true);
-
-            // Kunci di atas membuat publikasi berkode sama saling menunggu,
-            // sehingga revisi lama tidak mungkin tetap terpublikasi bersamaan.
-            // Titik Qdrant revisi lama sengaja tidak diubah; MySQL yang
-            // mengecualikannya dari evidence meski penandanya masih aktif.
             KnowledgeDocument::query()
                 ->where('document_code', $document->document_code)
                 ->whereKeyNot($document->getKey())
                 ->where('is_published', true)
                 ->update(['is_published' => false]);
 
-            // Provenance revisi yang pernah dipublikasikan dipertahankan: hanya
-            // flag current yang berubah ketika revisi lama diaktifkan kembali.
+            // Publikasi ulang revisi arsip mempertahankan aktor dan timestamp
+            // pertama; hanya flag revisi current yang berpindah.
             $document->forceFill($document->published_at === null
                 ? ['is_published' => true, 'published_at' => now(), 'published_by' => $publisherId]
                 : ['is_published' => true])->save();

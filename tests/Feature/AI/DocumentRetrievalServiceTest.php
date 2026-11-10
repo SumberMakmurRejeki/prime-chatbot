@@ -5,10 +5,8 @@ namespace Tests\Feature\AI;
 use App\Models\AiProviderConfiguration;
 use App\Models\AiProviderConfigurationRevision;
 use App\Models\KnowledgeDocument;
-use App\Models\User;
 use App\Services\AI\AiEndpointPinner;
 use App\Services\AI\DocumentRetrievalService;
-use App\Services\AI\KnowledgeDocumentService;
 use App\Services\AI\RetrievalEvidenceSelector;
 use App\Services\AI\SecureEmbeddingClient;
 use App\Services\AI\VectorStore\DistanceMetric;
@@ -377,7 +375,6 @@ class DocumentRetrievalServiceTest extends TestCase
         Http::fake(['provider.example.test/v1/embeddings' => Http::response(['data' => [
             ['index' => 0, 'embedding' => array_fill(0, 3072, 0.1)],
         ]])]);
-        $publisher = User::factory()->create(['role' => 'admin', 'is_active' => true, 'manage_ai' => true]);
         $revisionTwo = KnowledgeDocument::factory()->create([
             'document_code' => 'DOC-7',
             'version' => 'Rev.02',
@@ -385,11 +382,13 @@ class DocumentRetrievalServiceTest extends TestCase
         $revisionThree = KnowledgeDocument::factory()->create([
             'document_code' => 'DOC-7',
             'version' => 'Rev.03',
+            'is_published' => true,
         ]);
 
-        $documents = app(KnowledgeDocumentService::class);
-        $documents->publish($revisionTwo->id, $publisher->id);
-        $documents->publish($revisionThree->id, $publisher->id);
+        // Subjek tes ini adalah gerbang retrieval Qdrant legacy, bukan kontrak
+        // publikasi Gemini; status current dibuat langsung agar kedua titik
+        // vektor tetap aktif sementara MySQL hanya mengizinkan Rev.03.
+        KnowledgeDocument::query()->whereKey($revisionTwo->id)->update(['is_published' => false]);
 
         // Titik Qdrant lama belum dinonaktifkan; MySQL menjadi gerbang penolak.
         $store->results = [

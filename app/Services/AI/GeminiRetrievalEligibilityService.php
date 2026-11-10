@@ -41,6 +41,12 @@ use Laravel\Ai\Enums\Lab;
  * diverifikasi dan wajib gagal tertutup. Recovery tidak pernah memaksa
  * reindex: store dan konfigurasi dibandingkan terpisah dari revisi kredensial.
  *
+ * Predikat bukti indeks yang sama dipakai dua pemanggil dengan syarat yang
+ * berbeda: retrieval menambahkan `status` ready dan `is_published`, sedangkan
+ * gerbang publikasi memanggilnya untuk dokumen yang justru belum dipublikasikan
+ * ({@see self::trustedIndexFor()}). Aturan provenance dengan demikian hidup di
+ * satu tempat, bukan diduplikasi antar service.
+ *
  * Setiap bukti yang hilang, ambigu, atau bertentangan menghasilkan kandidat
  * yang tidak dikembalikan (fail closed), bukan kandidat yang dilemahkan.
  * Kelayakan juga bukan aktivasi: pemanggil berikutnya tetap memutuskan sendiri
@@ -63,10 +69,9 @@ final class GeminiRetrievalEligibilityService
      */
     public function eligibleCandidates(): Collection
     {
-        $store = $this->fileSearch->configuredStoreIdentity();
-        $revision = $this->activeGeminiRevision();
+        $authorized = $this->authorizedIndexContext();
 
-        if ($store === null || $revision === null) {
+        if ($authorized === null) {
             return collect();
         }
 
@@ -76,17 +81,54 @@ final class GeminiRetrievalEligibilityService
             ->with('geminiIndex')
             ->orderBy('id')
             ->get()
-            ->map(fn (KnowledgeDocument $document): ?GeminiRetrievalCandidate => $this->candidateFor(
-                $document,
-                $store,
-                (int) $revision->configuration_id,
-                (int) $revision->id,
-            ))
+            ->map(fn (KnowledgeDocument $document): ?GeminiRetrievalCandidate => $this->candidateFor($document, $authorized))
             ->filter()
             ->values();
     }
 
-    private function candidateFor(KnowledgeDocument $document, string $store, int $authorizedConfigurationId, int $authorizedRevisionId): ?GeminiRetrievalCandidate
+    /**
+     * Bukti indeks tepercaya untuk satu dokumen, TANPA mensyaratkan dokumen
+     * sudah dipublikasikan.
+     *
+     * Gerbang publikasi memakai predikat ini supaya aturan provenance tidak
+     * hidup di dua tempat. NULL berarti publishability belum terbukti dan
+     * pemanggil wajib gagal tertutup: store atau kredensial Gemini belum
+     * lengkap, baris indeks belum `completed`, snapshot identitas sudah basi,
+     * store berbeda, atau provenance kredensial/import identity tidak ada.
+     */
+    public function trustedIndexFor(KnowledgeDocument $document): ?GeminiRetrievalCandidate
+    {
+        $authorized = $this->authorizedIndexContext();
+
+        return $authorized === null ? null : $this->candidateFor($document, $authorized);
+    }
+
+    /**
+     * Konteks kredensial dan store yang mengesahkan indeks; NULL bila store
+     * terkonfigurasi atau revisi Gemini tunggal yang eligible tidak tersedia.
+     *
+     * @return array{store: string, configurationId: int, revisionId: int}|null
+     */
+    private function authorizedIndexContext(): ?array
+    {
+        $store = $this->fileSearch->configuredStoreIdentity();
+        $revision = $this->activeGeminiRevision();
+
+        if ($store === null || $revision === null) {
+            return null;
+        }
+
+        return [
+            'store' => $store,
+            'configurationId' => (int) $revision->configuration_id,
+            'revisionId' => (int) $revision->id,
+        ];
+    }
+
+    /**
+     * @param  array{store: string, configurationId: int, revisionId: int}  $authorized
+     */
+    private function candidateFor(KnowledgeDocument $document, array $authorized): ?GeminiRetrievalCandidate
     {
         $index = $document->geminiIndex;
 
@@ -98,15 +140,15 @@ final class GeminiRetrievalEligibilityService
             return null;
         }
 
-        if ($index->store_id !== $store) {
+        if ($index->store_id !== $authorized['store']) {
             return null;
         }
 
-        if (! $this->credentialProvenanceMatches($index, $authorizedConfigurationId, $authorizedRevisionId)) {
+        if (! $this->credentialProvenanceMatches($index, $authorized['configurationId'], $authorized['revisionId'])) {
             return null;
         }
 
-        return $this->candidateFromVerifiedIndex($index, $store, $authorizedConfigurationId);
+        return $this->candidateFromVerifiedIndex($index, $authorized['store'], $authorized['configurationId']);
     }
 
     /**

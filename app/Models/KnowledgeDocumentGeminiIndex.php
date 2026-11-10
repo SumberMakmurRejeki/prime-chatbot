@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Services\AI\GeminiDocumentIndexState;
+use App\Services\AI\GeminiRemoteWriteEvidence;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -14,13 +15,14 @@ class KnowledgeDocumentGeminiIndex extends Model
         'knowledge_document_id', 'document_code', 'document_version', 'document_checksum',
         'store_id', 'google_file_id', 'operation_name', 'google_document_name', 'state',
         'generation', 'credential_configuration_id', 'credential_revision_id', 'import_identity',
-        'safe_error_code', 'safe_error_message', 'last_checked_at',
+        'remote_write_evidence', 'safe_error_code', 'safe_error_message', 'last_checked_at',
     ];
 
     protected function casts(): array
     {
         return [
             'state' => GeminiDocumentIndexState::class,
+            'remote_write_evidence' => GeminiRemoteWriteEvidence::class,
             'generation' => 'integer',
             'credential_configuration_id' => 'integer',
             'credential_revision_id' => 'integer',
