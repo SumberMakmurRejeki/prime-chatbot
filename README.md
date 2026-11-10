@@ -16,15 +16,16 @@ its databases are separate and must not be modified from here.
 | Local path | `C:\laragon\www\prime-google` |
 | Repository | `SumberMakmurRejeki/prime-chatbot` (GitHub remote `origin`) |
 
-After the agent-foundation baseline, development continues on feature
-branches. At the 2026-11-09 Gemini milestone finalization the working branch
-is `feature/gemini-file-search`; the Gemini implementation is committed locally
-as `0981c39` (indexing provenance and scoped retrieval) and `37e82cc`
-(Assistant binding), followed by the documentation commit that carries this
-text. `origin` carries `main`, whose HEAD is the merge commit of PR #1 from
-`chore/prime-google-agent-foundation`; the feature branch is not published yet.
-Run `git status` and `git log` for the current working-tree and branch state;
-historical observations do not describe later changes.
+After the agent-foundation baseline, development continues on feature branches.
+At the 2026-11-10 backend milestone the working branch is
+`feature/gemini-file-search`; the accepted Gemini backend work is committed
+locally as `0981c39` and `37e82cc` (2026-11-09) and `fc439ee` (`feat(ai): add
+safe Gemini index recovery and history`, 2026-11-10), followed by the
+documentation commit that carries this text. `origin` carries `main`, whose
+HEAD is the merge commit of PR #1 from `chore/prime-google-agent-foundation`;
+the feature branch is not published yet. Run `git status` and `git log` for the
+current working-tree and branch state; historical observations do not describe
+later changes.
 
 ## Current capabilities
 
@@ -40,7 +41,7 @@ project:
   runtime; only a legacy service-worker cleanup shim and the `push_subscriptions`
   schema remain (see "Database identities" for the guarded secondary connection).
 - The Admin-only Assistant uses Gemini for answer generation and Gemini File Search for SOP retrieval; it does not fall back to Qdrant. Only the current published SOP revision is eligible, and returned citations must match the trusted registry and import identity.
-- Qdrant remains in the legacy SOP upload/index/publish lifecycle and its vector-store implementation. The Gemini Assistant binding does not remove those Qdrant dependencies; see "AI subsystem status".
+- SOP PDF processing and publication no longer require Qdrant. Qdrant code and its legacy consumers remain in the repository pending retirement; see "AI subsystem status".
 
 ## Stack and prerequisites
 
@@ -51,7 +52,7 @@ project:
 | Composer | 2.x, matching the existing `composer.lock` |
 | Node.js | Any current LTS that satisfies the existing `package-lock.json` (Vite 6, Vue 3.5, Tailwind 4) |
 | MySQL | One server hosting the development database and the QA database |
-| Qdrant | Temporary legacy dependency for AI retrieval/indexing; not needed for setup, tests or non-AI web pages |
+| Qdrant | Legacy code remains but is not required for setup, tests, SOP processing/publication, or non-AI web pages; retirement is pending |
 
 ## Independent local setup
 
@@ -128,7 +129,7 @@ access. Keep outbound HTTP fakes in place.
 
 ## AI subsystem status
 
-**Implemented in the working tree:** `GroundedAnswerService` is bound to `GeminiGroundedAnswerService`; Assistant conversations use Gemini answer generation with a scoped Gemini File Search tool. Retrieval candidates require the current published, `ready` SOP revision, a completed Gemini index row, matching document snapshot and configured store, and matching credential configuration/revision provenance. Historical revisions and rows lacking required provenance or `import_identity` are excluded (fail closed). There is no implicit Qdrant fallback in the Assistant.
+**Implemented and committed:** `GroundedAnswerService` is bound to `GeminiGroundedAnswerService`; Assistant conversations use Gemini answer generation with a scoped Gemini File Search tool. Retrieval candidates require the current published, `ready` SOP revision, a completed Gemini index row, matching document snapshot and configured store, and matching credential configuration/revision provenance. Historical revisions and rows lacking required provenance or `import_identity` are excluded (fail closed). There is no implicit Qdrant fallback in the Assistant. The backend milestone in `fc439ee` separates PDF processing from indexing; indexing never auto-publishes, and failed indexing of a replacement leaves the currently published revision intact. Publication validates the trusted Gemini index without a Gemini network mutation. The backend also adds generation history and fail-closed recovery for failed Gemini indexing. This does not mean operational readiness or UAT completion.
 
 **Citation trust:** PRIME builds the trusted citation map from eligible registry/index records. Gemini citation annotations must match the trusted document code, canonical version, store URI and generation-specific `import_identity`; unverified citations are discarded. A response without a verified citation is not presented as an SOP answer.
 
@@ -136,9 +137,9 @@ access. Keep outbound HTTP fakes in place.
 
 **Verified in QA and tests:** The Gemini milestone's 378-test/1,738-assertion result, full-suite 1,193-test/6,970-assertion result, synthetic live Gemini verification and Assistant browser E2E are historical. This provider-configuration fix was verified separately on 2026-11-09: 459 tests and 2,422 assertions passed across `tests/Feature/Settings` and `tests/Feature/AI` on PHP 8.3.36 with SQLite `:memory:`; disposable browser QA created and revised a Gemini configuration with synthetic credentials and confirmed no provider request was sent. No live provider verification or operational activation was performed.
 
-**Operational cutover pending:** The migration adding Gemini indexing credential provenance and `import_identity` is committed on the feature branch but has not been executed against the operational target. Existing index rows without provenance remain ineligible; do not treat historical records as verified. AI Settings now persists the driver selected by the Admin and keeps it across revisions, so a Gemini provider configuration can be created and revised through the UI; that correction is covered by tests and a disposable browser QA pass, not by an operational activation. Operational migration, provider activation, and cutover still need separate verification and Owner approval.
+**Operational cutover pending:** The provider-provenance migration and the generation-history/remote-write-evidence migrations are committed on the feature branch but have not been executed against the operational target. Existing index rows without provenance remain ineligible; do not treat historical records as verified. Backend recovery and generation history exist without an Admin recovery/status UI yet; Recovery UAT and MySQL concurrency verification are still pending. Operational migration, provider activation, and cutover still need separate verification and Owner approval.
 
-**Legacy Qdrant:** Qdrant is not the Assistant's active answer/retrieval backend, but remains in the SOP document lifecycle and embedding/vector-store services. Qdrant removal is a separate milestone and is not part of this change. Gemini is the target RAG provider; this working-tree implementation is not a production-readiness or operational-activation claim.
+**Legacy Qdrant:** Qdrant is not the Assistant backend and no longer participates in SOP `process()` or `publish()`; its code, embedding services, and legacy consumers remain in the repository pending an inventory that proves no runtime consumer remains. Removal is a separate Owner-approved milestone. Gemini is the target RAG provider; these commits are not a production-readiness or operational-activation claim.
 
 The front end is migrating incrementally from Blade to Laravel + Inertia/Vue
 with the NovaSpark Design System as the target. Vue pages and Blade business
