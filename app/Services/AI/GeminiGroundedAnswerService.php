@@ -4,10 +4,21 @@ namespace App\Services\AI;
 
 use App\Exceptions\DocumentAnswerUnavailable;
 use App\Models\KnowledgeDocument;
+use GuzzleHttp\Exception\ConnectException;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Laravel\Ai\Exceptions\AiException;
+use Laravel\Ai\Exceptions\InsufficientCreditsException;
+use Laravel\Ai\Exceptions\ProviderConnectionException;
+use Laravel\Ai\Exceptions\ProviderOverloadedException;
+use Laravel\Ai\Exceptions\RateLimitedException;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Gateway\StepResponse;
 use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Responses\Data\FinishReason;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Throwable;
 
 /**
@@ -77,8 +88,97 @@ PROMPT;
         } catch (DocumentAnswerUnavailable $exception) {
             throw $exception;
         } catch (Throwable $exception) {
+            $this->logFailure($exception);
+
             throw new DocumentAnswerUnavailable($exception);
         }
+    }
+
+    /**
+     * Only allowlisted exception types and structured status values reach logs;
+     * exception objects and provider messages can contain request secrets.
+     */
+    private function logFailure(?Throwable $exception, string $category = 'unknown'): void
+    {
+        $status = $this->httpStatus($exception);
+        $category = $status === null ? $category : match (true) {
+            $status === 429 => 'rate_limited',
+            $status === 402 => 'quota_exhausted',
+            $status === 401 || $status === 403 => 'authentication_or_permission',
+            $status === 504 => 'provider_timeout',
+            $status === 502 || $status === 503 => 'provider_unavailable',
+            default => 'unknown',
+        };
+
+        if ($status === null) {
+            $category = match (true) {
+                $exception instanceof RateLimitedException => 'rate_limited',
+                $exception instanceof InsufficientCreditsException => 'quota_exhausted',
+                $exception instanceof ProviderOverloadedException => 'provider_unavailable',
+                $this->isTransportTimeout($exception) => 'timeout',
+                $exception instanceof ProviderConnectionException, $exception instanceof ConnectionException => 'provider_unavailable',
+                $exception instanceof AiException => 'invalid_response',
+                default => $category,
+            };
+        }
+
+        $requestId = request()->input('request_id');
+        $correlationId = is_string($requestId) && Str::isUuid($requestId) ? $requestId : (string) Str::uuid();
+        Log::warning('assistant.provider_failure', [
+            'event' => 'assistant.provider_failure',
+            'category' => $category,
+            'http_status' => $status,
+            'exception_class' => $this->safeExceptionClass($exception),
+            'correlation_id' => $correlationId,
+        ]);
+    }
+
+    private function httpStatus(?Throwable $exception): ?int
+    {
+        for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof RequestException && $current->response !== null) {
+                return $current->response->status();
+            }
+
+            if ($current instanceof HttpExceptionInterface) {
+                return $current->getStatusCode();
+            }
+        }
+
+        return null;
+    }
+
+    private function isTransportTimeout(?Throwable $exception): bool
+    {
+        for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof ConnectException
+                && ($current->getHandlerContext()['errno'] ?? null) === CURLE_OPERATION_TIMEDOUT) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function safeExceptionClass(?Throwable $exception): string
+    {
+        $approvedClasses = [
+            RequestException::class,
+            ConnectionException::class,
+            ConnectException::class,
+            AiException::class,
+            RateLimitedException::class,
+            InsufficientCreditsException::class,
+            ProviderOverloadedException::class,
+            ProviderConnectionException::class,
+        ];
+        for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            if (in_array($current::class, $approvedClasses, true)) {
+                return $current::class;
+            }
+        }
+
+        return 'other';
     }
 
     private function generate(GeminiRetrievalSourceTool $tool, string $question, GeminiRetrievalCandidate $authorized): StepResponse
@@ -92,6 +192,8 @@ PROMPT;
         if ($resolution['configuration_id'] !== $authorized->credentialConfigurationId
             || $resolution['revision_id'] !== $authorized->credentialRevisionId
         ) {
+            $this->logFailure(null);
+
             throw new DocumentAnswerUnavailable;
         }
 
@@ -111,6 +213,8 @@ PROMPT;
         // Satu langkah tanpa lanjutan: finish reason selain stop berarti provider
         // tidak menyelesaikan jawaban, sehingga tidak ada klaim yang boleh dipakai.
         if ($step->finishReason !== FinishReason::Stop) {
+            $this->logFailure(null, 'invalid_response');
+
             throw new DocumentAnswerUnavailable;
         }
 

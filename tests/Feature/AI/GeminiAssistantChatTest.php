@@ -8,10 +8,15 @@ use App\Models\KnowledgeDocument;
 use App\Models\KnowledgeDocumentGeminiIndex;
 use App\Models\User;
 use App\Services\AI\AiEndpointPinner;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Psr7\Request;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\TestCase;
 
 /**
@@ -503,24 +508,165 @@ class GeminiAssistantChatTest extends TestCase
             ->assertSee('halaman 3');
     }
 
-    public function test_gemini_failure_is_a_controlled_error_without_any_qdrant_fallback(): void
+    public function test_gemini_failure_is_logged_safely_without_changing_admin_response_or_persistence(): void
     {
         $document = $this->sop('SOP-UPCAST-001', '3.0', true);
         $this->index($document);
+        $requestId = (string) Str::uuid();
+        Log::spy();
 
-        Http::fake([self::BASE_URL.'/interactions' => Http::response(['error' => ['message' => 'upstream down']], 500)]);
+        Http::fake([self::BASE_URL.'/interactions' => Http::response(['error' => ['message' => 'fictional-secret-question-and-provider-detail']], 503)]);
 
         $conversationId = $this->createConversation();
         $this->post("/assistant/conversations/{$conversationId}/messages", [
-            'message' => 'Berapa tekanan operasi Upcast?', 'request_id' => (string) Str::uuid(),
+            'message' => 'fictional-secret-question', 'request_id' => $requestId,
         ])->assertRedirect()
             ->assertSessionHas('flash_error', 'Assistant tidak dapat menjawab saat ini. Periksa konfigurasi Chat Provider dan layanan Knowledge Base, lalu coba lagi.');
 
         $this->assertSame(0, DB::table('agent_conversation_messages')->count());
-        // Satu-satunya permintaan keluar adalah Gemini; tidak ada retrieval lain
-        // (mis. embedding/Qdrant) yang dipanggil sebagai pengganti.
         Http::assertSentCount(1);
         Http::assertSent(static fn ($request): bool => str_contains($request->url(), '/interactions'));
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(function (string $message, array $context) use ($requestId): bool {
+            return $message === 'assistant.provider_failure'
+                && isset($context['event'], $context['category'], $context['http_status'], $context['exception_class'], $context['correlation_id'])
+                && array_keys($context) === ['event', 'category', 'http_status', 'exception_class', 'correlation_id']
+                && $context['event'] === 'assistant.provider_failure'
+                && $context['category'] === 'provider_unavailable'
+                && $context['http_status'] === 503
+                && $context['exception_class'] === 'Laravel\\Ai\\Exceptions\\ProviderOverloadedException'
+                && $context['correlation_id'] === $requestId
+                && ! str_contains(json_encode($context), 'fictional-secret');
+        });
+    }
+
+    public function test_gemini_http_failures_are_classified_from_structured_statuses(): void
+    {
+        $document = $this->sop('SOP-UPCAST-001', '3.0', true);
+        $this->index($document);
+        $statuses = [429 => 'rate_limited', 504 => 'provider_timeout', 500 => 'unknown'];
+        $responseIndex = 0;
+        Log::spy();
+        Http::fake([self::BASE_URL.'/interactions' => function () use ($statuses, &$responseIndex) {
+            $status = array_keys($statuses)[$responseIndex++];
+
+            return Http::response(['error' => ['message' => 'fictional-sensitive-provider-payload']], $status);
+        }]);
+
+        foreach ($statuses as $status => $category) {
+            $conversationId = $this->createConversation();
+            $this->post("/assistant/conversations/{$conversationId}/messages", [
+                'message' => 'fictional-sensitive-question', 'request_id' => (string) Str::uuid(),
+            ])->assertRedirect()
+                ->assertSessionHas('flash_error', 'Assistant tidak dapat menjawab saat ini. Periksa konfigurasi Chat Provider dan layanan Knowledge Base, lalu coba lagi.');
+        }
+
+        $this->assertSame(0, DB::table('agent_conversation_messages')->count());
+        Http::assertSentCount(3);
+
+        $diagnostics = [];
+        Log::shouldHaveReceived('warning')->times(3)->withArgs(static function (string $message, array $context) use (&$diagnostics): bool {
+            $diagnostics[] = [$message, $context];
+
+            return true;
+        });
+
+        $this->assertCount(3, $diagnostics);
+        foreach ($statuses as $status => $category) {
+            $matchingDiagnostics = array_filter($diagnostics, static fn (array $diagnostic): bool => $diagnostic[0] === 'assistant.provider_failure'
+                && array_keys($diagnostic[1]) === ['event', 'category', 'http_status', 'exception_class', 'correlation_id']
+                && $diagnostic[1]['event'] === 'assistant.provider_failure'
+                && $diagnostic[1]['category'] === $category
+                && $diagnostic[1]['http_status'] === $status
+                && $diagnostic[1]['exception_class'] === match ($status) {
+                    429 => 'Laravel\\Ai\\Exceptions\\RateLimitedException',
+                    504 => 'Laravel\\Ai\\Exceptions\\ProviderOverloadedException',
+                    default => 'Illuminate\\Http\\Client\\RequestException',
+                }
+                && Str::isUuid($diagnostic[1]['correlation_id'])
+                && ! str_contains(json_encode($diagnostic[1]), 'fictional-sensitive'));
+            $this->assertCount(1, $matchingDiagnostics);
+        }
+    }
+
+    public function test_gemini_transport_timeout_is_classified_without_provider_payload(): void
+    {
+        $document = $this->sop('SOP-UPCAST-001', '3.0', true);
+        $this->index($document);
+        Log::spy();
+        Http::fake([self::BASE_URL.'/interactions' => fn () => throw new ConnectionException(
+            'cURL error 28: Operation timed out',
+            28,
+            new ConnectException('cURL error 28: Operation timed out', new Request('POST', self::BASE_URL.'/interactions'), null, ['errno' => 28]),
+        )]);
+
+        $conversationId = $this->createConversation();
+        $this->post("/assistant/conversations/{$conversationId}/messages", [
+            'message' => 'fictional-sensitive-question', 'request_id' => (string) Str::uuid(),
+        ])->assertRedirect()
+            ->assertSessionHas('flash_error', 'Assistant tidak dapat menjawab saat ini. Periksa konfigurasi Chat Provider dan layanan Knowledge Base, lalu coba lagi.');
+
+        $this->assertSame(0, DB::table('agent_conversation_messages')->count());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(static fn (string $message, array $context): bool => $message === 'assistant.provider_failure'
+            && $context['event'] === 'assistant.provider_failure'
+            && array_keys($context) === ['event', 'category', 'http_status', 'exception_class', 'correlation_id']
+            && $context['category'] === 'timeout'
+            && $context['http_status'] === null
+            && $context['exception_class'] === 'Laravel\\Ai\\Exceptions\\ProviderConnectionException'
+            && Str::isUuid($context['correlation_id'])
+            && ! str_contains(json_encode($context), 'fictional-sensitive'));
+    }
+
+    public function test_gemini_invalid_provider_response_is_classified_without_sensitive_data(): void
+    {
+        $document = $this->sop('SOP-UPCAST-001', '3.0', true);
+        $this->index($document);
+        Log::spy();
+        Http::fake([self::BASE_URL.'/interactions' => Http::response([
+            'status' => 'failed',
+            'errors' => [['code' => 'provider_error', 'message' => 'fictional-sensitive-provider-payload']],
+        ])]);
+
+        $conversationId = $this->createConversation();
+        $this->post("/assistant/conversations/{$conversationId}/messages", [
+            'message' => 'fictional-sensitive-question', 'request_id' => (string) Str::uuid(),
+        ])->assertRedirect()
+            ->assertSessionHas('flash_error', 'Assistant tidak dapat menjawab saat ini. Periksa konfigurasi Chat Provider dan layanan Knowledge Base, lalu coba lagi.');
+
+        $this->assertSame(0, DB::table('agent_conversation_messages')->count());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(static fn (string $message, array $context): bool => $message === 'assistant.provider_failure'
+            && $context['category'] === 'invalid_response'
+            && $context['http_status'] === null
+            && $context['exception_class'] === 'Laravel\\Ai\\Exceptions\\AiException'
+            && Str::isUuid($context['correlation_id'])
+            && ! str_contains(json_encode($context), 'fictional-sensitive'));
+    }
+
+    public function test_unclassified_exception_is_logged_as_unknown_without_message_or_response_persistence(): void
+    {
+        $document = $this->sop('SOP-UPCAST-001', '3.0', true);
+        $this->index($document);
+        Log::spy();
+        Http::fake([self::BASE_URL.'/interactions' => fn () => throw new RuntimeException('fictional-sensitive-provider-message')]);
+
+        $conversationId = $this->createConversation();
+        $this->post("/assistant/conversations/{$conversationId}/messages", [
+            'message' => 'fictional-sensitive-question', 'request_id' => (string) Str::uuid(),
+        ])->assertRedirect()
+            ->assertSessionHas('flash_error', 'Assistant tidak dapat menjawab saat ini. Periksa konfigurasi Chat Provider dan layanan Knowledge Base, lalu coba lagi.');
+
+        $this->assertSame(0, DB::table('agent_conversation_messages')->count());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(static fn (string $message, array $context): bool => $message === 'assistant.provider_failure'
+            && $context['event'] === 'assistant.provider_failure'
+            && array_keys($context) === ['event', 'category', 'http_status', 'exception_class', 'correlation_id']
+            && $context['category'] === 'unknown'
+            && $context['http_status'] === null
+            && $context['exception_class'] === 'other'
+            && Str::isUuid($context['correlation_id'])
+            && ! str_contains(json_encode($context), 'fictional-sensitive'));
     }
 
     /**
