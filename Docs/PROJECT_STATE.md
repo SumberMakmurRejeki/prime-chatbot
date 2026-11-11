@@ -6,21 +6,23 @@ dan rencana implementasi dibedakan secara eksplisit.
 
 | Item | Nilai |
 |---|---|
-| Terakhir diperbarui | 2026-11-10 |
+| Terakhir diperbarui | 2026-11-11 |
 | Baseline ter-commit | `cc5378ab19e46370e922aac5ff32c8f1cf4018a1` (`chore: establish initial PRIME Google baseline`, 2026-11-02) |
 | Agent-foundation ter-commit | `e70c6eefc5316957ef51f5e8cc09c99245af53e0`; 35 file committed |
 | Penggabungan agent-foundation | COMMITTED — PR #1 digabung; `origin/main` = `277d7251da2ea9768bef480927223b8a502ca456` (`Merge pull request #1 from SumberMakmurRejeki/chore/prime-google-agent-foundation`, 2026-11-04) |
-| Branch kerja pada checkpoint | `feature/gemini-file-search`; belum dipublikasikan ke `origin` |
+| Branch kerja pada checkpoint | `feature/gemini-file-search`; belum dipublikasikan ke `origin` (diverifikasi 2026-11-11: branch tidak punya upstream, dan `git ls-remote --heads origin` hanya memuat `main` serta `chore/prime-google-agent-foundation`) |
 | Commit AI/Gemini sebelumnya di branch kerja | `f156825`, `d3c7ac0` (2026-11-07), `6d8a507` (2026-11-08), lalu `0981c39` dan `37e82cc` (finalisasi 2026-11-09) — keduanya hanya lokal |
-| Commit backend Gemini yang diterima | `fc439ee2b8712b0c8e714e07f981108ebe865a99` (`feat(ai): add safe Gemini index recovery and history`, 2026-11-10); HEAD saat checkpoint |
-| Commit dokumentasi status milestone | `741aa70`, `7a9d7c9`, `eeca798` (checkpoint dokumentasi terdahulu), disusul commit dokumentasi pembaruan Gemini backend ini. Semua lokal; `git log` adalah sumber untuk HEAD setelah checkpoint ini |
-| Working tree pada checkpoint | `.gitignore` dimodifikasi (entri `/.playwright-cli/`) dan `Docs/design-system-reference/` tidak terlacak; keduanya dipertahankan sengaja di luar commit dokumentasi. Observasi tertanggal, bukan status permanen |
+| Commit backend Gemini yang diterima | `fc439ee2b8712b0c8e714e07f981108ebe865a99` (`feat(ai): add safe Gemini index recovery and history`, 2026-11-10); bukan lagi HEAD |
+| Commit diagnostik Assistant Gemini | `8d45410f880de9242119aad6d34734ab2c97b004` (`fix(ai): log Gemini assistant provider failures safely`, 2026-11-11); HEAD pada checkpoint 2026-11-11; hanya lokal |
+| Commit dokumentasi status milestone | `741aa70`, `7a9d7c9`, `eeca798`, `6df69e0` (checkpoint dokumentasi terdahulu), disusul commit dokumentasi pembaruan FNC-01 ini. Semua lokal; `git log` adalah sumber untuk HEAD setelah checkpoint ini |
+| Working tree pada checkpoint 2026-11-11 | 14 file termodifikasi dan 5 path tidak terlacak (`.gitignore`, controller/request/service AI, `phpunit.xml`, `Sidebar.vue`, view knowledge-documents, `routes/web.php`, `vite.config.js`, test AI/Settings; serta `Docs/design-system-reference/`, `resources/js/pages/Settings/`, `tests/Feature/AI/Concerns/`, dan dua test Gemini baru); semuanya dipertahankan sengaja di luar commit dokumentasi. Observasi tertanggal, bukan status permanen |
 | Remote | `origin` → `https://github.com/SumberMakmurRejeki/prime-chatbot.git` |
 
-Checkpoint Git diverifikasi 2026-11-10 melalui `git rev-parse HEAD`,
+Checkpoint Git diverifikasi 2026-11-11 melalui `git rev-parse HEAD`,
 `git branch --show-current`, `git status --porcelain=v1`, `git log`,
 `git remote -v`, `git branch -a`, dan `git ls-remote --heads origin`;
-feature branch tidak ada pada heads `origin`.
+HEAD adalah `8d45410`, branch kerja tidak ada pada heads `origin`, dan
+staging area kosong sebelum edit dokumentasi.
 
 Label bukti yang dipakai di dokumen ini:
 
@@ -72,7 +74,7 @@ PRIME Google adalah aplikasi Laravel untuk domain *preventive maintenance*
 | Agent-foundation commit | `e70c6eefc5316957ef51f5e8cc09c99245af53e0`, 35 file, HEAD branch saat checkpoint | `git log`, `git show --stat` |
 | Remote Git | `origin` → `https://github.com/SumberMakmurRejeki/prime-chatbot.git` | `git remote -v` |
 | Branch dipublikasikan | `origin/main` = `277d7251` (merge PR #1) dan `origin/chore/prime-google-agent-foundation` = `df174210` | COMMITTED (2026-11-08), `git ls-remote --heads origin` |
-| Branch kerja Gemini | `feature/gemini-file-search` (HEAD `fc439ee` pada checkpoint 2026-11-10) hanya lokal; tidak ada di `origin` | `git branch --show-current`, `git rev-parse HEAD`; `git ls-remote` terakhir 2026-11-08 |
+| Branch kerja Gemini | `feature/gemini-file-search` (HEAD `8d45410` pada checkpoint 2026-11-11; sebelumnya `fc439ee` pada 2026-11-10) hanya lokal; tidak ada di `origin` | `git branch --show-current`, `git rev-parse HEAD`; `git ls-remote --heads origin` (2026-11-11) |
 | Project asal (dilindungi) | `C:\laragon\www\Preventive_Maintenance`; tidak boleh dimodifikasi dari repository ini | `README.md` |
 
 Catatan baseline: PRIME Google diturunkan dari PRIME dan mempertahankan
@@ -159,8 +161,10 @@ migrasi historis dan guard koneksi sekunder.
 Ringkasan: Gemini File Search adalah jalur retrieval SOP target tunggal PRIME dan
 Gemini menghasilkan jawabannya. Qdrant tidak lagi menjadi dependency pemrosesan
 PDF maupun publikasi SOP, dan bukan fallback Assistant. Backend lifecycle Gemini
-telah diterima pada `fc439ee`; aktivasi operasional, UAT, recovery UI Admin, dan
-pensiun total kode Qdrant tetap terpisah dari checkpoint tersebut.
+telah diterima pada `fc439ee`; UAT fungsional FNC-01 diterima Owner pada
+2026-11-11 (lihat baris status di bawah), sedangkan verifikasi concurrency,
+aktivasi operasional, recovery UI Admin, cutover, dan pensiun total kode
+Qdrant tetap terpisah dari checkpoint tersebut.
 
 | Aspek | Status | Bukti |
 |---|---|---|
@@ -181,8 +185,11 @@ pensiun total kode Qdrant tetap terpisah dari checkpoint tersebut.
 | Kredensial Gemini tunggal | SOURCE-VERIFIED — satu sumber koneksi dari revisi chat provider aktif; kredensial tidak disimpan di config File Search | `app/Services/AI/GeminiFileSearchConnection.php` |
 | **AI Settings Gemini driver** | SOURCE-VERIFIED + TEST-VERIFIED — Admin memilih driver dari daftar tervalidasi server-side; create menyimpan pilihan, revise mempertahankan driver konfigurasi, dan pergantian jenis provider pada revisi ditolak | `app/Http/Requests/Settings/StoreAiProviderConfigurationRequest.php`, `app/Services/Settings/AiProviderConfigurationService.php`, `tests/Feature/Settings/AiProviderConfigurationTest.php` |
 | Qdrant di runtime | SOURCE-VERIFIED — tidak dipakai `KnowledgeDocumentService::process()`/`publish()` dan bukan fallback Assistant. Implementasi vector store, embedding legacy, readiness inspector, serta consumer/test-nya masih ada di repository; retirement belum disetujui | `app/Services/AI/KnowledgeDocumentService.php`, `app/Providers/AppServiceProvider.php`, `app/Services/AI/` |
-| Migration/aktivasi operasional | PENDING — migration provenance dan generation history sudah di-commit, tetapi belum dibuktikan diterapkan pada target operasional; QA bukan approval produksi | Migration terkait; tidak ada bukti penerapan operasional |
-| UAT FNC-01, MySQL concurrency, cutover | PENDING — belum dijalankan pada task ini; source dan test bukan bukti UAT atau kesiapan produksi | Belum ada bukti verifikasi pada checkpoint ini |
+| Migration/aktivasi operasional | PENDING / NOT VERIFIED — migration provenance, generation history, dan remote-write evidence sudah di-commit, tetapi belum dibuktikan diterapkan pada target operasional; QA bukan approval produksi | Migration terkait; tidak ada bukti penerapan operasional |
+| FNC-01 functional RAG UAT | APPROVED — Owner menerima UAT fungsional 12/12 pada 2026-11-11; memvalidasi RAG dokumen terbit, termasuk sitasi dan abstention (dokumen ID 1 selesai diindeks `completed`, dipublikasikan manual, dan dijawab Assistant tanpa fabrikasi). Hasil ini bukan bukti reliabilitas produksi atau cutover | Penerimaan Owner; laporan UAT OMP 99-08 / 100-08 (bukti handoff eksternal, tidak ada file di repository) |
+| Verifikasi concurrency MySQL | PENDING / NOT VERIFIED — belum ada bukti uji concurrency MySQL independen | Tidak ada bukti verifikasi pada checkpoint ini |
+| Aktivasi operasional dan cutover | PENDING / NOT VERIFIED — UAT fungsional tidak membuktikan aktivasi pada target operasional; cutover memerlukan approval Owner tersendiri | Tidak ada bukti verifikasi pada checkpoint ini |
+| Diagnostik kegagalan Assistant Gemini | COMMITTED — commit `8d45410` menambah logging kegagalan provider pada `GeminiGroundedAnswerService` dan pengujiannya; PHPUnit fokus `GeminiAssistantChatTest` dilaporkan 22 PASS / 148 assertion pada 2026-11-11 (tidak dijalankan ulang pada sesi dokumentasi ini). Logging terstruktur tidak menetapkan akar penyebab error Gemini intermiten sebelumnya | `git show 8d45410`; hasil sesi test 2026-11-11 |
 | Web search / grounding via web | NOT IMPLEMENTED — tidak ada integrasi terverifikasi dalam scope ini | Tidak ada bukti source yang diverifikasi di sini |
 | AI operasional terhadap database domain | NOT IMPLEMENTED — jalur terverifikasi hanya menjawab dari dokumen SOP | Tidak ada jalur query domain yang diverifikasi |
 
@@ -275,6 +282,8 @@ Layanan eksternal:
 | Baseline repo ditegakkan sebagai commit awal | COMMITTED | `cc5378a` (2026-11-02) |
 | Baseline hardening (pra-commit pertama) tercatat sebagai scope inisiatif | DOCUMENTED | `specs/product/SCOPE_LATEST.yaml` |
 | Agent-foundation committed (35 file) | COMMITTED | `e70c6ee`, HEAD `chore/prime-google-agent-foundation` |
+| FNC-01 Functional RAG UAT | APPROVED — 12/12 PASS; Owner acceptance 2026-11-11. Dua belas hasil adalah hasil kumulatif dalam validasi yang dilaporkan, bukan 12 permintaan sukses berturut-turut dan bukan reliabilitas provider 100%. Bukti validasi: external handoff OMP 99-08 / 100-08; Owner acceptance terpisah dari bukti source/test | OWNER DECISION: penerimaan UAT; TEST-VERIFIED menurut laporan eksternal OMP 99-08 / 100-08 (tidak tersimpan di repository) |
+| Diagnostik kegagalan Assistant Gemini | COMMITTED — `8d45410f880de9242119aad6d34734ab2c97b004` (`fix(ai): log Gemini assistant provider failures safely`, 2026-11-11); PHPUnit fokus `GeminiAssistantChatTest`: 22 PASS / 148 assertion, hasil yang dilaporkan untuk 2026-11-11 dan tidak dijalankan ulang pada sesi dokumentasi ini | `git show 8d45410`; hasil test sesi 2026-11-11; accepted review OMP 102-08 (handoff eksternal) |
 | Branch dipublikasikan ke `origin` | COMMITTED pada checkpoint 2026-11-03 | `git ls-remote --heads origin` |
 | Working tree bersih | HISTORICAL — observasi saat HEAD `e70c6ee` (2026-11-03) diverifikasi; bukan status permanen | `git status --porcelain=v1` |
 | PR #1 (agent-foundation) | COMMITTED — digabung; `origin/main` = `277d7251` (merge commit, 2026-11-04) | `git ls-remote --heads origin` (2026-11-08) |
@@ -292,11 +301,14 @@ Hasil run 2026-11-09 (HISTORICAL): subset `tests/Feature/AI` +
 1.738 assertion PASS**, dan seluruh suite menghasilkan **1.193 test, 6.970
 assertion PASS** (PHP 8.3.36, SQLite `:memory:`).
 
-Commit `fc439ee` (2026-11-10) kemudian mengubah
-`KnowledgeDocumentLifecycleTest`, `GeminiDocumentIndexingTest`, dan
-`GeminiIndexingProvenanceTest`, serta menambah dua migration, sehingga angka
-di atas tidak lagi mewakili HEAD. Test tidak dijalankan ulang pada task
-dokumentasi ini.
+Commit `fc439ee` (2026-11-10) mengubah `KnowledgeDocumentLifecycleTest`,
+`GeminiDocumentIndexingTest`, dan `GeminiIndexingProvenanceTest`, serta
+menambah dua migration, sehingga angka di atas tidak lagi mewakili HEAD.
+Commit `8d45410` (2026-11-11) menambah logging kegagalan pada
+`GeminiGroundedAnswerService` dan pengujian `GeminiAssistantChatTest`;
+satu-satunya angka test terbaru yang dicatat adalah 22 PASS / 148 assertion
+terfokus pada 2026-11-11 (dilaporkan, tidak dijalankan ulang pada sesi
+dokumentasi ini). Angka suite penuh di atas tetap HISTORICAL.
 
 Penerimaan formal atas seluruh kriteria `specs/product/SCOPE_LATEST.yaml` (status
 HARDENED/PARTIAL/BLOCKED): NOT VERIFIED.
@@ -304,18 +316,23 @@ HARDENED/PARTIAL/BLOCKED): NOT VERIFIED.
 ## 8. Keterbatasan dan pekerjaan terbuka
 
 1. **Branch kerja belum dipublikasikan.** `feature/gemini-file-search` hanya ada
-   lokal; status remote tidak diperiksa ulang pada pembaruan ini. Jangan
-   menyamakan commit lokal dengan rilis atau aktivasi operasional.
-2. **Backend Gemini sudah di-commit, bukan readiness produksi.** `fc439ee`
-   memisahkan processing PDF, indexing antrean, publikasi eksplisit, generation
-   history, dan recovery aman. Ini bukan klaim UAT selesai atau siap produksi.
+   lokal; `git ls-remote --heads origin` pada 2026-11-11 masih memuat hanya
+   `main` dan `chore/prime-google-agent-foundation`. Jangan menyamakan commit
+   lokal dengan rilis atau aktivasi operasional.
+2. **Backend Gemini dan diagnostik sudah di-commit, bukan readiness produksi.**
+   `fc439ee` memisahkan processing PDF, indexing antrean, publikasi eksplisit,
+   generation history, dan recovery aman; `8d45410` menambah logging kegagalan
+   Assistant. Ini bukan klaim siap produksi; UAT fungsional FNC-01 diterima
+   terpisah pada 2026-11-11 (lihat butir 5).
 3. **Admin recovery/status/history UI belum ada.** `recover()` belum memiliki
    trigger UI/rute, dan belum ada tampilan status indexing maupun generation
    history untuk Admin.
 4. **Operasional belum diverifikasi.** Penerapan migration, aktivasi provider,
    cutover, dan approval Owner belum dibuktikan pada target operasional.
-5. **FNC-01 RAG UAT belum dijalankan** pada task ini; rencana UAT memakai PDF
-   dummy FNC-01 dan 12 pertanyaan validasi.
+5. **FNC-01 functional UAT sudah diterima 12/12**, tetapi hasil tersebut
+   belum membuktikan stabilitas produksi, reliabilitas setiap permintaan, atau
+   operational cutover. Penerimaan Owner dan bukti validasi dilaporkan terpisah;
+   laporan eksternal OMP 99-08 / 100-08 tidak tersedia sebagai file repository.
 6. **MySQL concurrency verification masih pending.** Test terisolasi tidak
    menggantikan verifikasi concurrency pada MySQL.
 7. **Qdrant retirement masih pending.** Qdrant bukan requirement
@@ -351,28 +368,32 @@ HARDENED/PARTIAL/BLOCKED): NOT VERIFIED.
 
 ## 9. Prioritas pengembangan berikutnya
 
-Urutan berikut mencatat pekerjaan yang belum selesai; ini bukan jadwal maupun
-persetujuan deployment.
+Urutan ini adalah arah pengembangan yang disetujui Owner, bukan klaim bahwa
+fitur sudah diimplementasikan; daftar mencatat pekerjaan berikutnya dan
+dependensi terbuka, bukan persetujuan deployment.
 
-1. **FNC-01 RAG UAT** dengan PDF dummy dan 12 pertanyaan validasi; catat hasil
-   retrieval, sitasi, dan abstention tanpa menganggapnya aktivasi produksi.
-2. **Admin Gemini recovery/indexing UI** — trigger recovery terotorisasi,
-   status indexing, dan tampilan generation history.
-3. **Verifikasi concurrency MySQL** untuk lifecycle dan publikasi.
-4. **Migration/cutover operasional** dengan verifikasi target dan approval Owner.
-5. **Qdrant retirement** setelah seluruh runtime consumer terinventarisasi dan
-   terbukti tidak diperlukan.
-6. **AI expansion discovery** — query terkontrol atas data PRIME operasional
-   serta internet grounding dengan atribusi sumber.
-7. **Master PM Checksheet / PM Action UX improvements.**
-8. **Historical PM before PRIME** — kebutuhan dan desain masih perlu discovery.
-9. **PM Executor dan operational workflow UAT.**
-10. **Modernisasi gradual Vue/Inertia/NovaSpark**; halaman Blade diganti hanya
-    setelah penggantinya diverifikasi dan diterima.
-11. **AI navigation/menu simplification dan final release/legacy cleanup** tetap
-    PENDING; retirement tidak dilakukan dalam milestone dokumentasi ini.
+1. **Penemuan query operasional PRIME yang read-only dan terkontrol serta
+   rencana arsitektur** — discovery dibatasi tanpa mutasi database.
+2. **QA terisolasi** — data operasional sintetis, reference answers, dan UAT
+   gabungan database + SOP.
+3. **Internet search terverifikasi dan UAT tiga sumber** dengan atribusi yang
+   dapat diverifikasi.
+4. **Modernisasi Vue/Inertia/NovaSpark**: Master PM Checksheet, PM Action,
+   workflow Admin, navigasi AI, serta UAT Operator PM Executor. Sebelum redesign
+   Master PM, audit relasi master, schedule, execution, review, dan history.
+5. **Handoff final proyek dan kesiapan rilis** setelah acceptance serta blocker
+   operasional diselesaikan.
 
-Status backend Gemini: **COMPLETED / COMMITTED** pada `fc439ee`.
+Dependensi terbuka yang tetap PENDING:
+- Gemini Admin recovery/status/history UI.
+- Verifikasi concurrency MySQL.
+- Migration/aktivasi operasional dan cutover approval.
+- Qdrant retirement setelah verifikasi seluruh consumer.
+- Historical PM import.
+- Pensiun bertahap Blade views yang digantikan, setelah pengganti diverifikasi.
+
+Status backend Gemini: **COMPLETED / COMMITTED** pada `fc439ee`; diagnostik
+Assistant: **COMMITTED** pada `8d45410`.
 Kesiapan operasional: **PENDING**.
 
 Setiap perubahan kapabilitas wajib disertai bukti (source atau test) sebelum
@@ -408,5 +429,8 @@ statusnya dinaikkan di dokumen ini.
 - Hasil verifikasi lama tetap berlabel HISTORICAL sampai dijalankan ulang.
 - Gunakan `NOT VERIFIED` untuk informasi yang belum dapat dibuktikan; jangan
   menebak.
+- Laporan OMP yang dirujuk (mis. 58, 99-08, 100-08, 102-08, 103-08) adalah
+  bukti handoff eksternal; file laporan tersebut tidak tersimpan di repository,
+  dan jangan mengarang path artefaknya.
 - `README.md` tetap menjadi pintu masuk setup; `specs/product/SCOPE_LATEST.yaml`
   tetap menjadi scope inisiatif historis dan tidak diubah dari dokumen ini.
