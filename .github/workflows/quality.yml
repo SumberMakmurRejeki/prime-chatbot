@@ -1,0 +1,65 @@
+name: Quality checks
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: PHP and frontend quality
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: testing
+      APP_KEY: base64:VGVzdEtleUZvckNpcGxpbmVPbmx5MDEyMzQ1Njc4OTA=
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      DB_URL: ''
+      CACHE_STORE: array
+      MAIL_MAILER: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
+      GEMINI_API_KEY: ''
+      QDRANT_URL: http://127.0.0.1:6333
+      QDRANT_API_KEY: ''
+      QDRANT_COLLECTION: prime_google_ci_test
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+
+      - name: Install locked Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked npm dependencies
+        run: npm ci
+
+      - name: Run PHPUnit
+        run: vendor/bin/phpunit
+
+      - name: Run JavaScript tests
+        run: node --test tests/JavaScript/*.test.js
+
+      - name: Verify PHP formatting
+        run: vendor/bin/pint --test
+
+      - name: Build frontend
+        run: npm run build
