@@ -2,15 +2,20 @@
 
 namespace App\Exports\Breakdown;
 
+use App\Exports\Concerns\BindsLiteralTextCells;
 use App\Models\Breakdown;
 use App\Services\Report\ReportBreakdownService;
 use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Concerns\FromCollection;
+use Maatwebsite\Excel\Concerns\WithCustomValueBinder;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
+use Maatwebsite\Excel\DefaultValueBinder;
 
-class ReportBreakdownExport implements FromCollection, WithHeadings, WithMapping
+class ReportBreakdownExport extends DefaultValueBinder implements FromCollection, WithCustomValueBinder, WithHeadings, WithMapping
 {
+    use BindsLiteralTextCells;
+
     protected int $rowNumber = 0;
 
     /**
