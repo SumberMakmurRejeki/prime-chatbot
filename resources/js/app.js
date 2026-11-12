@@ -2057,14 +2057,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
 
         const dayLabels = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-        let currentStep = 1;
+        let currentStep = Number(checksheetWizardRoot.getAttribute('data-error-step')) || 1;
 
         // Standard legacy tanpa pivot tidak boleh berubah menjadi pilihan kosong
-        // eksplisit saat wizard disimpan tanpa konversi oleh Admin.
-        const normalizeStandardRow = (standard) => ({
-            ...standard,
-            action_ids: Array.isArray(standard.action_ids) ? standard.action_ids.map(Number) : undefined,
-        });
+        // eksplisit saat wizard disimpan tanpa konversi oleh Admin. Standard
+        // non-Action juga tidak pernah membawa action_ids/action_options; sisa
+        // nilai dari pergantian tipe dibuang agar tidak dikirim ke server.
+        const normalizeStandardRow = (standard) => {
+            const normalized = { ...standard };
+            if (normalized.input_type !== 'action') {
+                delete normalized.action_ids;
+                delete normalized.action_options;
+            } else if (Array.isArray(normalized.action_ids)) {
+                normalized.action_ids = normalized.action_ids.map(Number);
+            }
+            return normalized;
+        };
 
         const normalizeStandardMap = (standards) => {
             if (Array.isArray(standards)) {
@@ -2494,7 +2502,7 @@ document.addEventListener('DOMContentLoaded', () => {
             payloadInput.value = JSON.stringify({
                 selected_machine_ids: state.selectedMachineIds,
                 parts: state.parts,
-                standards: state.standards,
+                standards: normalizeStandardMap(state.standards),
                 schedule: state.schedule,
             });
         };

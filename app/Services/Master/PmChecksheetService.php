@@ -68,7 +68,7 @@ class PmChecksheetService
                 'checksheet_code' => $payload['checksheet_code'],
                 'checksheet_name' => $payload['checksheet_name'],
                 'description' => $payload['description'] ?? null,
-                'is_active' => (bool) ($payload['is_active'] ?? true),
+                'is_active' => array_key_exists('is_active', $payload) ? (bool) $payload['is_active'] : (bool) $checksheet->is_active,
             ])->save();
 
             $this->syncWizardData($checksheet, $payload, $request);
@@ -454,7 +454,7 @@ class PmChecksheetService
 
                     // Payload dengan action_ids hanya menyinkronkan pivot; kolom
                     // legacy action_options tidak boleh ditulis ulang/dinormalisasi.
-                    if (! array_key_exists('action_ids', $standardRow)) {
+                    if ($standardRow['input_type'] !== 'action' || ! array_key_exists('action_ids', $standardRow)) {
                         $standardAttributes['action_options'] = $standardRow['input_type'] === 'action'
                             ? array_values($standardRow['action_options'] ?? [])
                             : null;
@@ -468,7 +468,7 @@ class PmChecksheetService
                         $standardAttributes,
                     );
 
-                    if (array_key_exists('action_ids', $standardRow)) {
+                    if ($standardRow['input_type'] === 'action' && array_key_exists('action_ids', $standardRow)) {
                         // Urutan pilihan pengguna dipertahankan untuk pivot position,
                         // sedangkan lock selalu ascending by id agar urutan kunci
                         // Standard → Action seragam dengan PmActionService::deactivate().
@@ -476,7 +476,7 @@ class PmChecksheetService
 
                         if ($orderedActionIds === []) {
                             throw ValidationException::withMessages([
-                                'wizard_payload' => 'Standard action wajib memilih minimal 1 Master Action.',
+                                'wizard_payload.standards' => 'Standard action wajib memilih minimal 1 Master Action.',
                             ]);
                         }
 
@@ -503,13 +503,13 @@ class PmChecksheetService
                             || $lockedById->contains(fn (PmAction $action): bool => ! $action->is_active && ! in_array($action->id, $existingActionIds, true))
                         ) {
                             throw ValidationException::withMessages([
-                                'wizard_payload' => 'Master Action terpilih tidak valid atau sudah nonaktif.',
+                                'wizard_payload.standards' => 'Master Action terpilih tidak valid atau sudah nonaktif.',
                             ]);
                         }
 
                         if (! $lockedById->contains(fn (PmAction $action): bool => $action->is_active)) {
                             throw ValidationException::withMessages([
-                                'wizard_payload' => 'Standard action wajib memiliki minimal 1 Master Action aktif.',
+                                'wizard_payload.standards' => 'Standard action wajib memiliki minimal 1 Master Action aktif.',
                             ]);
                         }
 
@@ -531,6 +531,13 @@ class PmChecksheetService
                         }
                     }
 
+                    // Standard yang bukan lagi tipe Action tidak memiliki pilihan
+                    // Action; pivot lama dibersihkan. Snapshot historis tetap aman
+                    // karena tersimpan terpisah di pm_execution_items.
+                    if ($standardRow['input_type'] !== 'action') {
+                        $standard->actions()->detach();
+                    }
+
                     // Pivot menang atas legacy; hanya Action aktif yang akan dibekukan saat Start.
                     if ($standard->effectiveSelectionMode() === 'multiple') {
                         $mappedActions = $standard->actions()->reorder('pm_actions.id')
@@ -542,13 +549,13 @@ class PmChecksheetService
 
                         if ($offeredLabels === []) {
                             throw ValidationException::withMessages([
-                                'wizard_payload' => 'Mode Pilih Banyak memerlukan minimal satu pilihan Action aktif.',
+                                'wizard_payload.standards' => 'Mode Pilih Banyak memerlukan minimal satu pilihan Action aktif.',
                             ]);
                         }
 
                         if (! $this->actionService->hasUniqueLabelIdentities($offeredLabels)) {
                             throw ValidationException::withMessages([
-                                'wizard_payload' => 'Mode Pilih Banyak memerlukan pilihan Action dengan label unik.',
+                                'wizard_payload.standards' => 'Mode Pilih Banyak memerlukan pilihan Action dengan label unik.',
                             ]);
                         }
                     }
