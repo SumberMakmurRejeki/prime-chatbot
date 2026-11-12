@@ -2,15 +2,19 @@
 
 namespace App\Exports\PM;
 
+use App\Exports\Concerns\BindsLiteralTextCells;
 use App\Services\Report\ReportPmExportSpool;
 use App\Services\Report\ReportPmService;
 use Generator;
 use Maatwebsite\Excel\Concerns\FromGenerator;
+use Maatwebsite\Excel\Concerns\WithCustomValueBinder;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
+use Maatwebsite\Excel\DefaultValueBinder;
 
-class ReportPmWorkerExport implements FromGenerator, WithHeadings, WithMapping
+class ReportPmWorkerExport extends DefaultValueBinder implements FromGenerator, WithCustomValueBinder, WithHeadings, WithMapping
 {
+    use BindsLiteralTextCells;
     use MapsPmExportRows;
 
     public function __construct(
