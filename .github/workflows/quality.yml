@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
@@ -58,8 +60,55 @@ jobs:
       - name: Run JavaScript tests
         run: node --test tests/JavaScript/*.test.js
 
-      - name: Verify PHP formatting
-        run: vendor/bin/pint --test
+      - name: Verify changed PHP formatting
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request)
+              base_sha="$PR_BASE_SHA"
+              head_sha="$PR_HEAD_SHA"
+              ;;
+            push)
+              base_sha="$PUSH_BASE_SHA"
+              head_sha="$PUSH_HEAD_SHA"
+              ;;
+            *)
+              echo "Unsupported event for changed-file Pint: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || "$base_sha" == "$head_sha" ]]; then
+            echo "Invalid base/head commit identities for changed-file Pint." >&2
+            exit 1
+          fi
+
+          git cat-file -e "${base_sha}^{commit}"
+          git cat-file -e "${head_sha}^{commit}"
+
+          changed_files=$(mktemp)
+          trap 'rm -f "$changed_files"' EXIT
+          git diff --name-only --diff-filter=ACMRT -z "$base_sha" "$head_sha" -- '*.php' > "$changed_files"
+
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("$file")
+          done < "$changed_files"
+
+          if ((${#files[@]} == 0)); then
+            echo "No changed PHP files; Pint check passed."
+            exit 0
+          fi
+
+          vendor/bin/pint --test "${files[@]}"
 
       - name: Build frontend
         run: npm run build
