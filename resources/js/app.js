@@ -2061,11 +2061,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Standard legacy tanpa pivot tidak boleh berubah menjadi pilihan kosong
         // eksplisit saat wizard disimpan tanpa konversi oleh Admin. Standard
-        // non-Action juga tidak pernah membawa action_ids/action_options; sisa
-        // nilai dari pergantian tipe dibuang agar tidak dikirim ke server.
+        // non-Action juga tidak pernah membawa state Action; sisa nilai dari
+        // pergantian tipe dibuang agar tidak dikirim ke server.
         const normalizeStandardRow = (standard) => {
             const normalized = { ...standard };
             if (normalized.input_type !== 'action') {
+                delete normalized.selection_mode;
                 delete normalized.action_ids;
                 delete normalized.action_options;
             } else if (Array.isArray(normalized.action_ids)) {
@@ -2688,6 +2689,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const standard = state.standards[partId][Number(index)];
                 standard[field] = target.value;
                 if (field === 'input_type') {
+                    if (standard.input_type !== 'action') {
+                        delete standard.selection_mode;
+                    }
                     standard.action_options = [];
                     standard.action_ids = [];
                     renderStandards();
