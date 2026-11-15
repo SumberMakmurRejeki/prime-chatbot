@@ -54,6 +54,9 @@ jobs:
       - name: Install locked npm dependencies
         run: npm ci
 
+      - name: Build frontend
+        run: npm run build
+
       - name: Run PHPUnit
         run: vendor/bin/phpunit
 
@@ -109,6 +112,3 @@ jobs:
           fi
 
           vendor/bin/pint --test "${files[@]}"
-
-      - name: Build frontend
-        run: npm run build
