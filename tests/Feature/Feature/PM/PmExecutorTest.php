@@ -19,6 +19,7 @@ use App\Models\User;
 use App\Services\Auth\ActivityLogService;
 use App\Services\Master\PmActionService;
 use App\Services\Notification\AdminNotificationService;
+use App\Services\PM\BusinessDate;
 use App\Services\PM\LifecyclePolicy;
 use App\Services\PM\MachineLifecycleService;
 use App\Services\PM\PmExecutionHistoryService;
@@ -572,38 +573,54 @@ class PmExecutorTest extends TestCase
 
     public function test_future_occurrence_is_rejected_by_executor_context(): void
     {
-        $this->scheduleDate->update(['scheduled_date' => now()->addDay()->toDateString()]);
+        $this->travelTo(Carbon::parse('2026-11-15 17:38:34', 'UTC'));
 
         try {
-            app(PmExecutionService::class)->getExecutorContext($this->machine);
-            $this->fail('Future occurrence must not expose a new executor context.');
-        } catch (ValidationException $exception) {
-            $this->assertSame(
-                'PM terjadwal belum dapat dimulai sebelum tanggal jadwalnya.',
-                $exception->validator->errors()->first('machine'),
-            );
+            $this->scheduleDate->update([
+                'scheduled_date' => BusinessDate::today()->addDay()->toDateString(),
+            ]);
+
+            try {
+                app(PmExecutionService::class)->getExecutorContext($this->machine);
+                $this->fail('Future occurrence must not expose a new executor context.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(
+                    'PM terjadwal belum dapat dimulai sebelum tanggal jadwalnya.',
+                    $exception->validator->errors()->first('machine'),
+                );
+            }
+        } finally {
+            $this->travelBack();
         }
     }
 
     public function test_future_occurrence_start_redirects_with_validation_error_without_side_effects(): void
     {
-        $this->scheduleDate->update(['scheduled_date' => now()->addDay()->toDateString()]);
+        $this->travelTo(Carbon::parse('2026-11-15 17:38:34', 'UTC'));
 
-        $response = $this->from("/pm/executor/{$this->machine->machine_code}")
-            ->actingAs($this->operator)
-            ->post("/pm/executor/{$this->machine->machine_code}/start", [
-                'expected_revision' => 0,
+        try {
+            $this->scheduleDate->update([
+                'scheduled_date' => BusinessDate::today()->addDay()->toDateString(),
             ]);
 
-        $response->assertRedirect("/pm/executor/{$this->machine->machine_code}");
-        $response->assertSessionHasErrors([
-            'machine' => 'PM terjadwal belum dapat dimulai sebelum tanggal jadwalnya.',
-        ]);
-        $this->assertDatabaseCount('pm_executions', 0);
-        $this->assertDatabaseHas('pm_schedule_dates', [
-            'id' => $this->scheduleDate->id,
-            'status' => 'scheduled',
-        ]);
+            $response = $this->from("/pm/executor/{$this->machine->machine_code}")
+                ->actingAs($this->operator)
+                ->post("/pm/executor/{$this->machine->machine_code}/start", [
+                    'expected_revision' => 0,
+                ]);
+
+            $response->assertRedirect("/pm/executor/{$this->machine->machine_code}");
+            $response->assertSessionHasErrors([
+                'machine' => 'PM terjadwal belum dapat dimulai sebelum tanggal jadwalnya.',
+            ]);
+            $this->assertDatabaseCount('pm_executions', 0);
+            $this->assertDatabaseHas('pm_schedule_dates', [
+                'id' => $this->scheduleDate->id,
+                'status' => 'scheduled',
+            ]);
+        } finally {
+            $this->travelBack();
+        }
     }
 
     public function test_future_occurrence_with_in_progress_execution_is_reused(): void
