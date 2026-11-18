@@ -6,16 +6,35 @@
         'name' => $machine->machine_name,
         'location' => $machine->location?->location_name,
     ])->values()->all();
+    // Buka wizard pada langkah yang memuat error validasi pertama yang
+    // dapat diidentifikasi dari key error Laravel (tanpa mencocokkan teks
+    // pesan). Kunci generik 'wizard_payload' sengaja tidak dipetakan karena
+    // strukturnya tidak dapat dipastikan; fallback tetap langkah 1.
+    $wizardErrorStep = 1;
+    foreach ($errors->keys() as $wizardErrorKey) {
+        $wizardErrorStep = match (true) {
+            in_array($wizardErrorKey, ['schedule'], true), str_starts_with($wizardErrorKey, 'schedule.'), str_starts_with($wizardErrorKey, 'wizard_payload.schedule') => 5,
+            in_array($wizardErrorKey, ['standards'], true), str_starts_with($wizardErrorKey, 'wizard_payload.standards') => 4,
+            in_array($wizardErrorKey, ['parts'], true), str_starts_with($wizardErrorKey, 'wizard_payload.parts') => 3,
+            str_starts_with($wizardErrorKey, 'selected_machine_ids') => 2,
+            in_array($wizardErrorKey, ['checksheet_code', 'checksheet_name', 'description', 'is_active'], true) => 1,
+            default => 0,
+        };
+        if ($wizardErrorStep !== 0) {
+            break;
+        }
+    }
+    $wizardErrorStep = $wizardErrorStep === 0 ? 1 : $wizardErrorStep;
 @endphp
 
-<section class="space-y-6" data-checksheet-wizard data-edit-id="{{ $checksheet?->id }}" data-preview-url="{{ route('master-checksheet.preview-schedule-update', $checksheet->id ?? 0) }}" data-apply-url="{{ route('master-checksheet.apply-schedule-update', $checksheet->id ?? 0) }}" data-seed-machines='@json($seedMachines)' data-seed-payload='@json($initialPayload ?? new stdClass())' data-seed-actions='@json($actionOptions ?? [])' data-action-store-url="{{ route('master-checksheet.actions.store') }}">
+<section class="space-y-6" data-checksheet-wizard data-error-step="{{ $wizardErrorStep }}" data-edit-id="{{ $checksheet?->id }}" data-preview-url="{{ route('master-checksheet.preview-schedule-update', $checksheet->id ?? 0) }}" data-apply-url="{{ route('master-checksheet.apply-schedule-update', $checksheet->id ?? 0) }}" data-seed-machines='@json($seedMachines)' data-seed-payload='@json($initialPayload ?? new stdClass())' data-seed-actions='@json($actionOptions ?? [])' data-action-store-url="{{ route('master-checksheet.actions.store') }}">
     <a href="{{ route('master-checksheet.index') }}" class="inline-flex items-center gap-2 text-sm font-medium text-[var(--color-prime-muted)] hover:text-[var(--color-prime-ink)]">Kembali ke List</a>
 
     <h2 class="text-[2.35rem] font-semibold tracking-[-0.05em] text-[var(--color-prime-ink)]">{{ $title }}</h2>
 
     @if ($errors->any())
         <x-ui.alert variant="error">
-            {{ $errors->first('wizard_payload') ?? $errors->first() }}
+            {{ $errors->first() }}
         </x-ui.alert>
     @endif
 
@@ -47,8 +66,8 @@
                 <label class="block max-w-xs">
                     <span class="mb-1 block text-sm font-semibold">Status</span>
                     <select name="is_active" class="w-full rounded-xl border border-[var(--color-prime-border)] px-4 py-3">
-                        <option value="1" @selected((string) old('is_active', $checksheet?->is_active ? '1' : '1') === '1')>Aktif</option>
-                        <option value="0" @selected((string) old('is_active', $checksheet?->is_active ? '1' : '1') === '0')>Nonaktif</option>
+                        <option value="1" @selected((string) old('is_active', $checksheet?->is_active === null ? '1' : (int) $checksheet->is_active) === '1')>Aktif</option>
+                        <option value="0" @selected((string) old('is_active', $checksheet?->is_active === null ? '1' : (int) $checksheet->is_active) === '0')>Nonaktif</option>
                     </select>
                 </label>
             </div>

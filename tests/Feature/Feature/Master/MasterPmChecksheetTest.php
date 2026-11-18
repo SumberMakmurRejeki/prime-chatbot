@@ -1353,7 +1353,7 @@ class MasterPmChecksheetTest extends TestCase
                 'description' => "Kasus {$label}",
                 'is_active' => '1',
                 'wizard_payload' => json_encode($this->actionStandardPayload($actionIds), JSON_THROW_ON_ERROR),
-            ])->assertSessionHasErrors(['wizard_payload']);
+            ])->assertSessionHasErrors(['wizard_payload.standards']);
         }
 
         $this->assertSame(0, DB::table('pm_checksheet_standard_actions')->count());
@@ -1448,7 +1448,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_name' => 'Invalid empty selection',
             'is_active' => '1',
             'wizard_payload' => json_encode($this->actionStandardPayload([]), JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
 
         $this->assertSame('Legacy after', $checksheet->fresh()->checksheet_name);
         $this->assertSame([$second->id, $first->id], $standard->fresh()->actions()->pluck('pm_actions.id')->all());
@@ -1486,7 +1486,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_name' => 'Invalid addition',
             'is_active' => '1',
             'wizard_payload' => json_encode($this->actionStandardPayload([$active->id, $inactive->id]), JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
         $anotherStandardPayload = $this->actionStandardPayload([$active->id]);
         $anotherStandardPayload['standards']['part-1'][] = [
             'name' => 'Cek fan',
@@ -1501,7 +1501,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_name' => 'Invalid other standard',
             'is_active' => '1',
             'wizard_payload' => json_encode($anotherStandardPayload, JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
 
         $this->assertDatabaseMissing('pm_checksheet_standards', ['standard_name' => 'Cek fan']);
 
@@ -1532,7 +1532,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_name' => 'Only inactive',
             'is_active' => '1',
             'wizard_payload' => json_encode($this->actionStandardPayload([$toDeactivate->id]), JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
 
         $newAction = PmAction::query()->create(['action_label' => 'BERSIHKAN', 'is_active' => true]);
         $this->actingAs($this->admin)->get("/pm/master-checksheet/{$checksheet->id}/edit")
@@ -1544,7 +1544,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_name' => 'Stale selection',
             'is_active' => '1',
             'wizard_payload' => json_encode($this->actionStandardPayload([$active->id, $toDeactivate->id, $newAction->id]), JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
 
         $this->assertSame('Stable', $checksheet->fresh()->checksheet_name);
         $this->assertSame([$active->id, $toDeactivate->id], $standard->fresh()->actions()->pluck('pm_actions.id')->all());
@@ -1744,7 +1744,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_code' => 'PM-MODE-INVALID',
             'checksheet_name' => 'Invalid Mode',
             'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
 
         $payload['standards']['part-1'][0] = [
             'name' => 'Cek angka',
@@ -1756,7 +1756,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_code' => 'PM-MODE-NUMBER',
             'checksheet_name' => 'Number Mode',
             'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
         unset($payload['standards']['part-1'][0]['selection_mode']);
         $this->actingAs($this->admin)->post('/pm/master-checksheet', [
             'checksheet_code' => 'PM-MODE-NUMBER-NULL',
@@ -1813,7 +1813,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_code' => 'PM-CHOICE-DUP',
             'checksheet_name' => 'Pilihan ambigu',
             'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
 
         $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => 'PM-CHOICE-DUP']);
         $this->assertDatabaseMissing('pm_checksheet_standards', ['standard_name' => 'Cek indikator']);
@@ -1840,7 +1840,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_code' => 'PM-CHOICE-UPDATE',
             'checksheet_name' => 'After',
             'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors('wizard_payload');
+        ])->assertSessionHasErrors('wizard_payload.standards');
 
         $this->assertSame('Before', $checksheet->fresh()->checksheet_name);
         $this->assertSame('single', $standard->fresh()->effectiveSelectionMode());
@@ -1860,7 +1860,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_code' => 'PM-CHOICE-EXACT',
             'checksheet_name' => 'Pilihan ganda',
             'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors(['wizard_payload' => 'Mode Pilih Banyak memerlukan pilihan Action dengan label unik.']);
+        ])->assertSessionHasErrors(['wizard_payload.standards' => 'Mode Pilih Banyak memerlukan pilihan Action dengan label unik.']);
 
         $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => 'PM-CHOICE-EXACT']);
     }
@@ -1928,7 +1928,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_code' => 'PM-CHOICE-MAPPED-DUP',
             'checksheet_name' => 'After',
             'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-        ])->assertSessionHasErrors(['wizard_payload' => 'Mode Pilih Banyak memerlukan pilihan Action dengan label unik.']);
+        ])->assertSessionHasErrors(['wizard_payload.standards' => 'Mode Pilih Banyak memerlukan pilihan Action dengan label unik.']);
 
         $this->assertSame('Before', $checksheet->fresh()->checksheet_name);
         $this->assertSame('single', $standard->fresh()->effectiveSelectionMode());
@@ -1969,7 +1969,7 @@ class MasterPmChecksheetTest extends TestCase
             'checksheet_name' => 'After',
             'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
         ])->assertSessionHasErrors([
-            'wizard_payload' => 'Mode Pilih Banyak memerlukan minimal satu pilihan Action aktif.',
+            'wizard_payload.standards' => 'Mode Pilih Banyak memerlukan minimal satu pilihan Action aktif.',
         ]);
 
         $this->assertSame('Before', $checksheet->fresh()->checksheet_name);
@@ -2092,5 +2092,330 @@ class MasterPmChecksheetTest extends TestCase
                 'monthly_day' => null,
             ],
         ];
+    }
+
+    public function test_number_and_range_standards_allow_stale_action_ids_and_valid_decimals(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $payload = $this->actionStandardPayload([]);
+        $payload['standards']['part-1'][0] = [
+            'name' => 'Suhu',
+            'input_type' => 'number',
+            'target_value' => '-10.25',
+            'unit' => 'C',
+            'action_ids' => [],
+        ];
+
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-NUM-RANGE',
+            'checksheet_name' => 'Angka dan range',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('pm_checksheet_standards', [
+            'standard_name' => 'Suhu',
+            'target_value' => '-10.25',
+            'min_value' => null,
+            'max_value' => null,
+        ]);
+
+        $payload['standards']['part-1'][0] = [
+            'name' => 'Tegangan',
+            'input_type' => 'range',
+            'min_value' => '0.00',
+            'max_value' => '0',
+            'action_ids' => [],
+        ];
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-RANGE-ZERO',
+            'checksheet_name' => 'Range nol',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('pm_checksheet_standards', [
+            'standard_name' => 'Tegangan',
+            'target_value' => null,
+            'min_value' => '0.00',
+            'max_value' => '0.00',
+        ]);
+    }
+
+    public function test_invalid_checksheet_nested_payloads_are_friendly_and_atomic(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $invalidPayloads = [];
+
+        $payload = $this->actionStandardPayload([]);
+        $payload['parts'][$this->machine->id][0] = 'invalid';
+        $invalidPayloads[] = $payload;
+
+        $payload = $this->actionStandardPayload([]);
+        $payload['standards']['part-1'][0]['is_active'] = 'perhaps';
+        $invalidPayloads[] = $payload;
+
+        $payload = $this->actionStandardPayload([]);
+        $payload['standards']['part-1'][0]['unexpected'] = 'field';
+        $invalidPayloads[] = $payload;
+
+        foreach ($invalidPayloads as $index => $payload) {
+            $code = 'PM-BAD-PAYLOAD-'.$index;
+            $errorKey = $index === 0 ? 'wizard_payload.parts' : 'wizard_payload.standards';
+            $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+                'checksheet_code' => $code,
+                'checksheet_name' => 'Invalid payload',
+                'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+            ])->assertSessionHasErrors($errorKey);
+            $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => $code]);
+        }
+
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-BAD-JSON',
+            'checksheet_name' => 'Invalid JSON',
+            'wizard_payload' => '{invalid',
+        ])->assertSessionHasErrors();
+        $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => 'PM-BAD-JSON']);
+    }
+
+    public function test_duplicate_standard_names_are_case_insensitive_and_scoped_to_part(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $action = PmAction::query()->create(['action_label' => 'OK', 'is_active' => true]);
+        $payload = $this->actionStandardPayload([$action->id]);
+        $payload['standards']['part-1'][0]['name'] = '  Temperatur ';
+        $payload['parts'][$this->machine->id][] = ['id' => 'part-2', 'name' => 'Gearbox', 'description' => ''];
+        $payload['standards']['part-1'][] = [
+            'name' => '  Temperatur ',
+            'input_type' => 'action',
+            'action_options' => ['OK'],
+        ];
+        $payload['standards']['part-2'] = [[
+            'name' => 'temperatur',
+            'input_type' => 'action',
+            'action_options' => ['OK'],
+        ]];
+
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-DUPLICATE-STANDARD',
+            'checksheet_name' => 'Duplicate standard',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasErrors('wizard_payload.standards');
+        $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => 'PM-DUPLICATE-STANDARD']);
+
+        // Sama 'Temperatur' lintas part tetap sah; part-1 memakai standard number.
+        $payload['standards']['part-1'] = [
+            ['name' => 'Temperatur', 'input_type' => 'number', 'target_value' => '12.5', 'is_required' => true, 'is_active' => true],
+        ];
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-SAME-NAME-DIFFERENT-PART',
+            'checksheet_name' => 'Names scoped by part',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasNoErrors();
+    }
+
+    public function test_invalid_numeric_precision_overflow_range_and_unit_are_rejected_atomically(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $invalidStandards = [
+            ['input_type' => 'number', 'target_value' => '1.234'],
+            ['input_type' => 'number', 'target_value' => '10000000000'],
+            ['input_type' => 'range', 'min_value' => '2', 'max_value' => '1'],
+            ['input_type' => 'range', 'min_value' => '-10000000000', 'max_value' => '0'],
+        ];
+
+        foreach ($invalidStandards as $index => $standard) {
+            $payload = $this->actionStandardPayload([]);
+            $payload['standards']['part-1'][0] = [
+                'name' => 'Numeric '.$index,
+                ...$standard,
+            ];
+            $code = 'PM-BAD-NUMBER-'.$index;
+            $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+                'checksheet_code' => $code,
+                'checksheet_name' => 'Invalid numeric',
+                'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+            ])->assertSessionHasErrors('wizard_payload.standards');
+            $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => $code]);
+        }
+
+        $payload = $this->actionStandardPayload([]);
+        $payload['standards']['part-1'][0]['unit'] = str_repeat('u', 31);
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-BAD-UNIT',
+            'checksheet_name' => 'Invalid unit',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasErrors('wizard_payload.standards');
+        $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => 'PM-BAD-UNIT']);
+
+        $payload = $this->actionStandardPayload([]);
+        $payload['standards']['part-1'][0]['name'] = str_repeat('S', 151);
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-BAD-STANDARD-NAME-LENGTH',
+            'checksheet_name' => 'Invalid standard name length',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasErrors('wizard_payload.standards');
+        $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => 'PM-BAD-STANDARD-NAME-LENGTH']);
+    }
+
+    public function test_edit_preserves_inactive_status_when_omitted_and_accepts_explicit_changes(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $action = PmAction::query()->create(['action_label' => 'OK', 'is_active' => true]);
+        $payload = $this->actionStandardPayload([$action->id]);
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-INACTIVE-EDIT',
+            'checksheet_name' => 'Inactive checksheet',
+            'is_active' => '0',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasNoErrors();
+        $checksheet = PmChecksheet::query()->where('checksheet_code', 'PM-INACTIVE-EDIT')->firstOrFail();
+
+        $this->actingAs($this->admin)->get("/pm/master-checksheet/{$checksheet->id}/edit")
+            ->assertOk()
+            ->assertSee('<option value="0" selected>Nonaktif</option>', false);
+
+        $this->actingAs($this->admin)->put("/pm/master-checksheet/{$checksheet->id}", [
+            'checksheet_code' => $checksheet->checksheet_code,
+            'checksheet_name' => 'Still inactive',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('pm_checksheets', ['id' => $checksheet->id, 'is_active' => false]);
+
+        $this->actingAs($this->admin)->put("/pm/master-checksheet/{$checksheet->id}", [
+            'checksheet_code' => $checksheet->checksheet_code,
+            'checksheet_name' => 'Activated explicitly',
+            'is_active' => '1',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('pm_checksheets', ['id' => $checksheet->id, 'is_active' => true]);
+
+        $this->actingAs($this->admin)->put("/pm/master-checksheet/{$checksheet->id}", [
+            'checksheet_code' => $checksheet->checksheet_code,
+            'checksheet_name' => 'Invalid status',
+            'is_active' => 'active',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasErrors('is_active');
+        $this->assertDatabaseHas('pm_checksheets', ['id' => $checksheet->id, 'is_active' => true]);
+    }
+
+    public function test_failed_store_reopens_wizard_at_relevant_step_and_preserves_input(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $action = PmAction::query()->create(['action_label' => 'OK', 'is_active' => true]);
+        $payload = $this->actionStandardPayload([$action->id]);
+        $payload['standards']['part-1'][] = [
+            'name' => 'Cek Indikator',
+            'input_type' => 'action',
+            'action_options' => ['OK'],
+        ];
+        $submittedJson = json_encode($payload, JSON_THROW_ON_ERROR);
+
+        // Nama standard duplikat pada part yang sama -> buka Step 4.
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-STEP-STANDARDS',
+            'checksheet_name' => 'Step Proof',
+            'wizard_payload' => $submittedJson,
+        ])->assertSessionHasErrors('wizard_payload.standards')
+            ->assertSessionHasInput('wizard_payload', $submittedJson)
+            ->assertSessionHasInput('checksheet_name', 'Step Proof');
+
+        $this->actingAs($this->admin)->followingRedirects()->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-STEP-STANDARDS',
+            'checksheet_name' => 'Step Proof',
+            'wizard_payload' => $submittedJson,
+        ])->assertOk()
+            ->assertSee('data-error-step="4"', false)
+            ->assertSee('Nama standard duplikat')
+            ->assertSee('Cek indikator');
+
+        $this->assertDatabaseMissing('pm_checksheets', ['checksheet_code' => 'PM-STEP-STANDARDS']);
+    }
+
+    public function test_failed_store_header_error_reopens_wizard_at_step_one(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $payload = $this->actionStandardPayload([]);
+        $payload['standards']['part-1'][0]['input_type'] = 'number';
+        $payload['standards']['part-1'][0]['target_value'] = '10';
+        unset($payload['standards']['part-1'][0]['action_ids']);
+
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-STEP-HEADER',
+            'checksheet_name' => '',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasErrors('checksheet_name');
+
+        $this->actingAs($this->admin)->followingRedirects()->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-STEP-HEADER',
+            'checksheet_name' => '',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertOk()
+            ->assertSee('data-error-step="1"', false);
+    }
+
+    public function test_failed_store_schedule_error_reopens_wizard_at_step_five(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $payload = $this->actionStandardPayload([]);
+        $payload['standards']['part-1'][0]['input_type'] = 'number';
+        $payload['standards']['part-1'][0]['target_value'] = '10';
+        unset($payload['standards']['part-1'][0]['action_ids']);
+        $payload['schedule'] = [
+            'frequency_type' => 'weekly',
+            'operational_from' => '2026-05-21',
+            'weekly_days' => [],
+            'monthly_day' => null,
+        ];
+
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-STEP-SCHEDULE',
+            'checksheet_name' => 'Schedule Proof',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasErrors('wizard_payload.schedule');
+
+        $this->actingAs($this->admin)->followingRedirects()->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-STEP-SCHEDULE',
+            'checksheet_name' => 'Schedule Proof',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertOk()
+            ->assertSee('data-error-step="5"', false);
+    }
+
+    public function test_failed_edit_reopens_wizard_at_standards_step_preserving_edit_input(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-21 00:00:00', 'Asia/Jakarta'));
+        $action = PmAction::query()->create(['action_label' => 'OK', 'is_active' => true]);
+        $payload = $this->actionStandardPayload([$action->id]);
+        $this->actingAs($this->admin)->post('/pm/master-checksheet', [
+            'checksheet_code' => 'PM-STEP-EDIT',
+            'checksheet_name' => 'Edit Proof',
+            'wizard_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ])->assertSessionHasNoErrors();
+        $checksheet = PmChecksheet::query()->where('checksheet_code', 'PM-STEP-EDIT')->firstOrFail();
+
+        $payload['standards']['part-1'][0]['name'] = 'Nama Standard Baru';
+        $payload['standards']['part-1'][] = [
+            'name' => 'NAMA STANDARD BARU',
+            'input_type' => 'action',
+            'action_options' => ['OK'],
+        ];
+        $submittedJson = json_encode($payload, JSON_THROW_ON_ERROR);
+
+        // Edit path: validasi gagal pada standard -> buka Step 4 dengan isian edit utuh.
+        $this->actingAs($this->admin)->put("/pm/master-checksheet/{$checksheet->id}", [
+            'checksheet_code' => 'PM-STEP-EDIT',
+            'checksheet_name' => 'Edit Proof Revised',
+            'wizard_payload' => $submittedJson,
+        ])->assertSessionHasErrors('wizard_payload.standards')
+            ->assertSessionHasInput('checksheet_name', 'Edit Proof Revised');
+
+        $this->actingAs($this->admin)->followingRedirects()->put("/pm/master-checksheet/{$checksheet->id}", [
+            'checksheet_code' => 'PM-STEP-EDIT',
+            'checksheet_name' => 'Edit Proof Revised',
+            'wizard_payload' => $submittedJson,
+        ])->assertOk()
+            ->assertSee('data-error-step="4"', false)
+            ->assertSee('Nama Standard Baru');
+
+        $this->assertSame('Edit Proof', $checksheet->fresh()->checksheet_name);
     }
 }

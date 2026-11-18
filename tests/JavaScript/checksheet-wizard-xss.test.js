@@ -116,7 +116,7 @@ const FULL_SCRIPT = `${safeHtmlSrc}\n${impactSrc}\n${appSrc}`;
 //
 // Mengembalikan jsdom `document` untuk assertion selanjutnya.
 // ---------------------------------------------------------------------------
-function buildWizardDom({ editId = '', seedMachines = [], seedPayload = {}, seedActions = [] } = {}) {
+function buildWizardDom({ editId = '', seedMachines = [], seedPayload = {}, seedActions = [], errorStep = '' } = {}) {
     // Escape kutip tunggal pada JSON agar bisa ditempatkan di atribut HTML berkutip tunggal
     const escapeSQ = (json) => json.replace(/'/g, '&#39;');
 
@@ -135,6 +135,7 @@ function buildWizardDom({ editId = '', seedMachines = [], seedPayload = {}, seed
 
   <section
     data-checksheet-wizard
+    data-error-step="${errorStep}"
     data-edit-id="${editId}"
     data-preview-url=""
     data-apply-url=""
@@ -755,4 +756,103 @@ test('Master Action surfaces show comma guidance without splitting labels', () =
     inlineInput.dispatchEvent(inputEvent());
     assert.equal(inlineGuidance.classList.contains('hidden'), false);
     assert.equal(inlineInput.value, multiChoiceLabel);
+});
+
+test('non-action standards omit stale action mappings from the submitted wizard payload', () => {
+    const document = buildWizardDom({
+        editId: 'numeric-checksheet',
+        seedMachines: [{ id: 1, code: 'MESIN-01', name: 'Mesin Uji', location: 'Line 1' }],
+        seedPayload: {
+            selected_machine_ids: [1],
+            parts: { 1: [{ id: 'part-1', name: 'Komponen Uji', description: '' }] },
+            standards: {
+                'part-1': [{
+                    name: 'Suhu',
+                    input_type: 'number',
+                    target_value: '0',
+                    action_ids: [],
+                    action_options: [],
+                    is_required: true,
+                    is_active: true,
+                }],
+            },
+            schedule: {
+                frequency_type: 'daily',
+                weekly_days: [],
+                monthly_day: null,
+                operational_from: '2026-10-01',
+            },
+        },
+    });
+    const nextButton = document.querySelector('[data-step-next]');
+    for (let step = 0; step < 5; step++) {
+        nextButton.click();
+    }
+    document.querySelector('[data-checksheet-form]').dispatchEvent(
+        new document.defaultView.Event('submit', { bubbles: true, cancelable: true }),
+    );
+
+    const payload = JSON.parse(document.querySelector('[data-checksheet-payload]').value);
+    const standard = payload.standards['part-1'][0];
+    assert.equal(Object.hasOwn(standard, 'action_ids'), false);
+    assert.equal(Object.hasOwn(standard, 'action_options'), false);
+    assert.equal(standard.target_value, '0');
+});
+test('converting Action standards to numeric types omits stale Action fields', () => {
+    for (const inputType of ['number', 'range']) {
+        const document = buildWizardDom({
+            editId: 'action-checksheet',
+            seedMachines: [{ id: 1, code: 'MESIN-01', name: 'Mesin Uji', location: 'Line 1' }],
+            seedActions: [{ id: 73, action_label: 'OK', is_active: true }],
+            seedPayload: {
+                selected_machine_ids: [1],
+                parts: { 1: [{ id: 'part-1', name: 'Komponen Uji', description: '' }] },
+                standards: {
+                    'part-1': [{
+                        name: 'Kondisi',
+                        input_type: 'action',
+                        selection_mode: 'multiple',
+                        action_ids: [73],
+                        action_options: ['OK'],
+                        is_required: true,
+                        is_active: true,
+                    }],
+                },
+                schedule: { frequency_type: 'daily', weekly_days: [], monthly_day: null, operational_from: '2026-10-01' },
+            },
+        });
+        const typeSelect = document.querySelector('[data-standard-type="part-1:0"]');
+        typeSelect.value = inputType;
+        typeSelect.dispatchEvent(new document.defaultView.Event('input', { bubbles: true }));
+
+        for (let step = 0; step < 5; step++) {
+            document.querySelector('[data-step-next]').click();
+        }
+        document.querySelector('[data-checksheet-form]').dispatchEvent(
+            new document.defaultView.Event('submit', { bubbles: true, cancelable: true }),
+        );
+
+        const standard = JSON.parse(document.querySelector('[data-checksheet-payload]').value).standards['part-1'][0];
+        assert.equal(standard.input_type, inputType);
+        assert.equal(Object.hasOwn(standard, 'selection_mode'), false);
+        assert.equal(Object.hasOwn(standard, 'action_ids'), false);
+        assert.equal(Object.hasOwn(standard, 'action_options'), false);
+    }
+});
+test('wizard opens the step selected by the Laravel validation error key', () => {
+    for (const [errorStep, visibleStep] of [[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]]) {
+        const document = buildWizardDom({ errorStep });
+        const visiblePanels = Array.from(document.querySelectorAll('[data-step-panel]'))
+            .filter((panel) => ! panel.classList.contains('hidden'));
+
+        assert.equal(visiblePanels.length, 1);
+        assert.equal(visiblePanels[0].getAttribute('data-step-panel'), String(visibleStep));
+    }
+
+    const fallbackDocument = buildWizardDom();
+    assert.equal(
+        fallbackDocument.querySelector('[data-step-panel="1"]').classList.contains('hidden'),
+        false,
+        'unmapped validation keys fall back to the header step',
+    );
 });
