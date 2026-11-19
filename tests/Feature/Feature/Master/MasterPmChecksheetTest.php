@@ -15,6 +15,7 @@ use App\Models\PmExecutionItem;
 use App\Models\PmSchedule;
 use App\Models\PmScheduleDate;
 use App\Models\User;
+use App\Services\Auth\ActivityLogService;
 use App\Services\Master\PmChecksheetService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -93,6 +94,33 @@ class MasterPmChecksheetTest extends TestCase
             'guest_session_id' => $guestSession->id,
             'guest_name' => $guestSession->guest_name,
         ])->get('/pm/master-checksheet')->assertRedirect('/403');
+    }
+
+    public function test_checksheet_status_and_audit_roll_back_together(): void
+    {
+        foreach ([true, false] as $initialStatus) {
+            $checksheet = PmChecksheet::query()->create([
+                'checksheet_code' => $initialStatus ? 'PM-AUDIT-ACTIVE' : 'PM-AUDIT-INACTIVE',
+                'checksheet_name' => 'Status dengan audit atomik',
+                'is_active' => $initialStatus,
+            ]);
+            $this->mock(ActivityLogService::class, function ($mock): void {
+                $mock->shouldReceive('log')->once()->andThrow(new \RuntimeException('Audit unavailable'));
+            });
+            $service = app(PmChecksheetService::class);
+            $this->assertThrows(
+                fn () => $initialStatus
+                    ? $service->deactivate(request(), $checksheet)
+                    : $service->activate(request(), $checksheet),
+                \RuntimeException::class,
+            );
+
+            $this->assertSame($initialStatus, $checksheet->fresh()->is_active);
+            $this->assertSame(0, DB::table('user_activity_logs')
+                ->where('module_name', 'master_checksheet')
+                ->where('record_id', $checksheet->id)
+                ->count());
+        }
     }
 
     public function test_admin_can_create_checksheet_with_nested_data(): void

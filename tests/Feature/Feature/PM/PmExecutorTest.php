@@ -171,6 +171,110 @@ class PmExecutorTest extends TestCase
         ]);
     }
 
+    public function test_inactive_checksheet_rejects_direct_start_without_creating_execution(): void
+    {
+        $checksheet = PmChecksheet::query()->firstOrFail();
+        $this->actingAs($this->admin)
+            ->patch("/pm/master-checksheet/{$checksheet->id}/nonaktifkan")
+            ->assertRedirect('/pm/master-checksheet');
+
+        $this->actingAs($this->operator)
+            ->from("/pm/executor/{$this->machine->machine_code}")
+            ->post("/pm/executor/{$this->machine->machine_code}/start")
+            ->assertRedirect("/pm/executor/{$this->machine->machine_code}")
+            ->assertSessionHasErrors([
+                'machine' => 'Checksheet nonaktif. PM baru tidak dapat dimulai.',
+            ]);
+
+        $this->assertDatabaseCount('pm_executions', 0);
+        $this->assertDatabaseCount('pm_execution_items', 0);
+        $this->assertSame('scheduled', $this->scheduleDate->fresh()->status);
+        $this->assertFalse($checksheet->fresh()->is_active);
+    }
+
+    public function test_start_before_checksheet_deactivation_preserves_continuation_review_and_snapshots(): void
+    {
+        $checksheet = PmChecksheet::query()->firstOrFail();
+        $this->actingAs($this->operator)
+            ->post("/pm/executor/{$this->machine->machine_code}/start")
+            ->assertSessionHasNoErrors();
+        $execution = PmExecution::query()->firstOrFail();
+        $snapshotColumns = [
+            'id', 'pm_checksheet_part_id', 'pm_checksheet_standard_id',
+            'part_name_snapshot', 'standard_name_snapshot', 'input_type_snapshot',
+            'selection_mode_snapshot', 'action_options_snapshot', 'target_value_snapshot',
+            'min_value_snapshot', 'max_value_snapshot', 'unit_snapshot', 'is_required_snapshot',
+        ];
+        $snapshots = $execution->items()->orderBy('id')->get($snapshotColumns)->toArray();
+        $history = DB::table('pm_execution_history')->where('pm_execution_id', $execution->id)->get()->toArray();
+
+        $this->actingAs($this->admin)
+            ->patch("/pm/master-checksheet/{$checksheet->id}/nonaktifkan")
+            ->assertSessionHasNoErrors();
+        $this->assertEquals(
+            $history,
+            DB::table('pm_execution_history')->where('pm_execution_id', $execution->id)->get()->toArray(),
+        );
+
+        $this->actingAs($this->operator)
+            ->post("/pm/executor/{$this->machine->machine_code}/start")
+            ->assertSessionHasNoErrors();
+        $this->assertSame($execution->id, PmExecution::query()->sole()->id);
+
+        $results = [
+            'execution_action' => [$this->itemIdFor($this->actionStandard) => 'OK'],
+            'execution_number' => [
+                $this->itemIdFor($this->numberStandard) => 60,
+                $this->itemIdFor($this->rangeStandard) => 120,
+            ],
+        ];
+        $this->post("/pm/executor/{$this->machine->machine_code}/draft", [
+            ...$results,
+            'expected_revision' => (int) $execution->fresh()->revision,
+        ])->assertRedirect("/pm/executor/{$this->machine->machine_code}")->assertSessionHasNoErrors();
+        $this->assertSame(60.0, (float) PmExecutionItem::query()->findOrFail($this->itemIdFor($this->numberStandard))->number_value);
+
+        $this->post("/pm/executor/{$this->machine->machine_code}/submit", [
+            ...$results,
+            'expected_revision' => (int) $execution->fresh()->revision,
+        ])->assertRedirect("/machines/{$this->machine->machine_code}")->assertSessionHasNoErrors();
+        $this->assertSame('waiting_review', $execution->fresh()->status);
+
+        $this->actingAs($this->admin)
+            ->patch("/pm/review/{$execution->id}/approve", [
+                'expected_revision' => (int) $execution->fresh()->revision,
+                'review_note' => 'Pekerjaan yang sudah dimulai tetap dapat diselesaikan.',
+            ])
+            ->assertRedirect("/pm/review/{$execution->id}")
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('approved', $execution->fresh()->status);
+        $this->assertSame('approved', $this->scheduleDate->fresh()->status);
+        $this->assertSame($snapshots, $execution->items()->orderBy('id')->get($snapshotColumns)->toArray());
+        $this->assertFalse($checksheet->fresh()->is_active);
+        $this->assertDatabaseCount('pm_executions', 1);
+        $this->assertDatabaseHas('pm_execution_history', [
+            'pm_execution_id' => $execution->id,
+            'field_name' => 'Status PM',
+            'old_value' => 'waiting_review',
+            'new_value' => 'approved',
+        ]);
+    }
+
+    public function test_start_guard_preserves_admin_operator_authorization(): void
+    {
+        $checksheet = PmChecksheet::query()->firstOrFail();
+        $this->actingAs($this->admin)
+            ->post("/pm/executor/{$this->machine->machine_code}/start")
+            ->assertRedirect('/403');
+        $this->actingAs($this->operator)
+            ->patch("/pm/master-checksheet/{$checksheet->id}/nonaktifkan")
+            ->assertRedirect('/403');
+
+        $this->assertTrue($checksheet->fresh()->is_active);
+        $this->assertDatabaseCount('pm_executions', 0);
+    }
+
     /**
      * TASK-006 Slice C: satu assignment hanya boleh memiliki satu era schedule
      * current (active/paused). Test yang membuat era schedule baru harus
