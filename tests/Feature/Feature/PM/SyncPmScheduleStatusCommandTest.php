@@ -15,12 +15,15 @@ use App\Models\PrimeNotification;
 use App\Models\User;
 use App\Services\PM\MachineLifecycleService;
 use App\Services\PM\PmExecutionService;
+use App\Services\PM\ScheduleLifecycleService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Tests\TestCase;
 
 /**
@@ -481,34 +484,197 @@ class SyncPmScheduleStatusCommandTest extends TestCase
     }
 
     /**
-     * Era PAUSED tetap menua seperti perilaku saat ini: hanya ENDED yang beku.
+     * Occurrence PAUSED tidak menua, sementara assignment aktif lain tetap berjalan.
      */
-    public function test_paused_schedule_occurrences_keep_aging_and_notifying(): void
+    public function test_paused_schedule_occurrences_do_not_age_while_active_assignment_continues(): void
     {
         $this->schedule->forceFill(['lifecycle_status' => 'paused', 'is_active' => false])->save();
 
-        $scheduled = $this->createScheduleDate(now()->subDay()->toDateString(), 'scheduled');
-        $overdue = $this->createScheduleDate(now()->subDays(3)->toDateString(), 'overdue');
+        $pausedScheduled = $this->createScheduleDate(now()->subDay()->toDateString(), 'scheduled');
+        $pausedOverdue = $this->createScheduleDate(now()->subDays(3)->toDateString(), 'overdue');
+        $pausedScheduledBefore = $pausedScheduled->fresh()->getAttributes();
+        $pausedOverdueBefore = $pausedOverdue->fresh()->getAttributes();
+
+        $activeMachine = Machine::query()->create([
+            'location_id' => $this->machine->location_id,
+            'machine_code' => 'MC-SYNC-ACTIVE',
+            'machine_name' => 'Active Sync Machine',
+            'qr_token' => 'qr-sync-active',
+            'is_active' => true,
+            'lifecycle_status' => 'active',
+        ]);
+        $activeAssignment = PmChecksheetMachine::query()->create([
+            'pm_checksheet_id' => $this->schedule->checksheetMachine->pm_checksheet_id,
+            'machine_id' => $activeMachine->id,
+        ]);
+        $activeSchedule = PmSchedule::query()->create([
+            'pm_checksheet_machine_id' => $activeAssignment->id,
+            'frequency_type' => 'daily',
+            'start_date' => now()->subMonth()->toDateString(),
+            'generate_until' => now()->addMonth()->toDateString(),
+            'is_active' => true,
+            'lifecycle_status' => 'active',
+        ]);
+        $activeOccurrence = PmScheduleDate::query()->create([
+            'pm_schedule_id' => $activeSchedule->id,
+            'machine_id' => $activeMachine->id,
+            'scheduled_date' => now()->subDay()->toDateString(),
+            'status' => 'scheduled',
+        ]);
 
         Artisan::call('pm:sync-schedule-status');
         $output = Artisan::output();
 
-        $this->assertStringContainsString('Overdue: 1, Missed: 1', $output);
-        $this->assertSame('overdue', $scheduled->fresh()->status);
-        $this->assertSame('missed', $overdue->fresh()->status);
-        $this->assertDatabaseHas('notifications', [
-            'notification_type' => 'pm_overdue',
-            'related_id' => $scheduled->id,
+        $this->assertStringContainsString('Overdue: 1, Missed: 0', $output);
+        $this->assertSame('scheduled', $pausedScheduled->fresh()->status);
+        $this->assertSame('overdue', $pausedOverdue->fresh()->status);
+        $this->assertSame($pausedScheduledBefore, $pausedScheduled->fresh()->getAttributes());
+        $this->assertSame($pausedOverdueBefore, $pausedOverdue->fresh()->getAttributes());
+        $this->assertSame('overdue', $activeOccurrence->fresh()->status);
+        $this->assertDatabaseMissing('notifications', [
+            'related_table' => 'pm_schedule_dates',
+            'related_id' => $pausedScheduled->id,
+        ]);
+        $this->assertDatabaseMissing('notifications', [
+            'related_table' => 'pm_schedule_dates',
+            'related_id' => $pausedOverdue->id,
         ]);
         $this->assertDatabaseHas('notifications', [
-            'notification_type' => 'pm_missed',
-            'related_id' => $overdue->id,
+            'notification_type' => 'pm_overdue',
+            'related_id' => $activeOccurrence->id,
         ]);
     }
 
     /**
-     * Soft-delete Schedule BUKAN akhir era: era yang belum berakhir tetap menua,
-     * sehingga predikat `withTrashed()` dipertahankan secara sengaja.
+     * Kegagalan insert notifikasi sesudah CAS tidak boleh menyisakan aging parsial.
+     * Pause dijalankan setelah rollback, bukan sebagai transaksi konkuren palsu.
+     */
+    #[DataProvider('notificationFailureCases')]
+    public function test_notification_failure_rolls_back_aging_before_pause(
+        string $status,
+        int $daysAgo,
+        string $statusAtNotification,
+    ): void {
+        $this->travelTo(Carbon::create(2026, 11, 19, 12));
+        $request = Request::create('/', 'PATCH');
+        $request->setLaravelSession(app('session.store'));
+        $this->app->instance('request', $request);
+        $scheduleDate = $this->createScheduleDate(now()->subDays($daysAgo)->toDateString(), $status);
+        $scheduleDate->forceFill(['status_changed_at' => now()->subDays(7)])->save();
+        $before = $scheduleDate->fresh()->getAttributes();
+        $observedStatus = null;
+        $failure = new RuntimeException('notification persistence unavailable');
+        $dispatcher = PrimeNotification::getEventDispatcher();
+        PrimeNotification::setEventDispatcher(clone $dispatcher);
+
+        try {
+            PrimeNotification::creating(function () use ($scheduleDate, &$observedStatus, $failure): void {
+                $observedStatus = $scheduleDate->fresh()->status;
+                throw $failure;
+            });
+
+            try {
+                Artisan::call('pm:sync-schedule-status');
+                $this->fail('Kegagalan persistensi notifikasi harus diteruskan.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame($failure, $exception);
+            }
+        } finally {
+            PrimeNotification::setEventDispatcher($dispatcher);
+            $this->travelBack();
+        }
+
+        $this->assertSame($statusAtNotification, $observedStatus, 'CAS harus sudah terjadi sebelum insert notifikasi gagal.');
+        $this->assertSame($before, $scheduleDate->fresh()->getAttributes(), 'Status dan status_changed_at harus ikut rollback.');
+        $this->assertSame(0, PrimeNotification::query()->count());
+
+        app(ScheduleLifecycleService::class)->transition($this->schedule, 'paused', 'Pause setelah kegagalan notifikasi');
+        $this->assertSame('paused', $this->schedule->fresh()->lifecycle_status);
+        $this->assertDatabaseHas('user_activity_logs', [
+            'table_name' => 'pm_schedules',
+            'record_id' => $this->schedule->id,
+            'action' => 'lifecycle_transition',
+        ]);
+
+        $this->artisan('pm:sync-schedule-status')
+            ->expectsOutputToContain('Overdue: 0, Missed: 0')
+            ->assertExitCode(0);
+        $this->assertSame($before, $scheduleDate->fresh()->getAttributes());
+        $this->assertSame(0, PrimeNotification::query()->count());
+    }
+
+    /**
+     * @return array<string, array{string, int, string}>
+     */
+    public static function notificationFailureCases(): array
+    {
+        return [
+            'scheduled ke overdue' => ['scheduled', 1, 'overdue'],
+            'overdue ke missed' => ['overdue', 3, 'missed'],
+        ];
+    }
+
+    /**
+     * Pause nyata sesudah seleksi harus menang atas snapshot kandidat cron.
+     * Interleaving satu koneksi ini tidak membuktikan eksklusi lock InnoDB.
+     */
+    #[DataProvider('pauseAfterSelectionCases')]
+    public function test_command_skips_aging_when_pause_commits_after_selection(string $status, int $daysAgo): void
+    {
+        $request = Request::create('/', 'PATCH');
+        $request->setLaravelSession(app('session.store'));
+        $this->app->instance('request', $request);
+        $scheduleDate = $this->createScheduleDate(now()->subDays($daysAgo)->toDateString(), $status);
+        $before = $scheduleDate->fresh()->getAttributes();
+        $selectionListenerFired = false;
+        $listenerArmed = true;
+        $connection = DB::connection();
+        $dispatcher = $connection->getEventDispatcher();
+        $connection->setEventDispatcher(clone $dispatcher);
+
+        try {
+            $connection->listen(function ($query) use ($status, &$selectionListenerFired, &$listenerArmed): void {
+                if (! $listenerArmed
+                    || ! str_starts_with($query->sql, 'select')
+                    || ! str_contains($query->sql, 'from "pm_schedule_dates"')
+                    || ! str_contains($query->sql, 'not exists')
+                    || ! in_array($status, $query->bindings, true)) {
+                    return;
+                }
+
+                $listenerArmed = false;
+                $selectionListenerFired = true;
+                app(ScheduleLifecycleService::class)->transition($this->schedule, 'paused', 'Pause setelah seleksi cron');
+            });
+
+            $exitCode = Artisan::call('pm:sync-schedule-status');
+            $output = Artisan::output();
+        } finally {
+            $connection->setEventDispatcher($dispatcher);
+        }
+
+        $this->assertSame(0, $exitCode);
+        $this->assertTrue($selectionListenerFired);
+        $this->assertStringContainsString('Overdue: 0, Missed: 0', $output);
+        $this->assertSame('paused', $this->schedule->fresh()->lifecycle_status);
+        $this->assertSame($before, $scheduleDate->fresh()->getAttributes());
+        $this->assertSame(0, PrimeNotification::query()->count());
+    }
+
+    /**
+     * @return array<string, array{string, int}>
+     */
+    public static function pauseAfterSelectionCases(): array
+    {
+        return [
+            'seleksi scheduled' => ['scheduled', 1],
+            'seleksi overdue' => ['overdue', 3],
+        ];
+    }
+
+    /**
+     * Soft-delete Schedule tidak menutup era. Schedule aktif tetap menua;
+     * PAUSED dan ENDED tetap dikecualikan.
      */
     public function test_soft_deleted_schedule_with_non_ended_era_still_ages(): void
     {
