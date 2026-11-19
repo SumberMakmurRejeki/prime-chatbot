@@ -62,6 +62,7 @@ class PmChecksheetService
     public function update(Request $request, PmChecksheet $checksheet, array $payload): PmChecksheet
     {
         return DB::transaction(function () use ($request, $checksheet, $payload): PmChecksheet {
+            $checksheet = PmChecksheet::query()->whereKey($checksheet->id)->lockForUpdate()->firstOrFail();
             $oldValues = $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']);
 
             $checksheet->fill([
@@ -90,38 +91,44 @@ class PmChecksheetService
 
     public function deactivate(Request $request, PmChecksheet $checksheet): void
     {
-        $oldValues = $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']);
+        DB::transaction(function () use ($request, $checksheet): void {
+            $checksheet = PmChecksheet::query()->whereKey($checksheet->id)->lockForUpdate()->firstOrFail();
+            $oldValues = $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']);
 
-        $checksheet->forceFill(['is_active' => false])->save();
+            $checksheet->forceFill(['is_active' => false])->save();
 
-        $this->activityLog->log(
-            request: $request,
-            moduleName: 'master_checksheet',
-            action: 'deactivate',
-            description: sprintf('Deactivate checksheet %s', $checksheet->checksheet_code),
-            tableName: 'pm_checksheets',
-            recordId: $checksheet->id,
-            oldValues: $oldValues,
-            newValues: $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']),
-        );
+            $this->activityLog->log(
+                request: $request,
+                moduleName: 'master_checksheet',
+                action: 'deactivate',
+                description: sprintf('Deactivate checksheet %s', $checksheet->checksheet_code),
+                tableName: 'pm_checksheets',
+                recordId: $checksheet->id,
+                oldValues: $oldValues,
+                newValues: $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']),
+            );
+        });
     }
 
     public function activate(Request $request, PmChecksheet $checksheet): void
     {
-        $oldValues = $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']);
+        DB::transaction(function () use ($request, $checksheet): void {
+            $checksheet = PmChecksheet::query()->whereKey($checksheet->id)->lockForUpdate()->firstOrFail();
+            $oldValues = $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']);
 
-        $checksheet->forceFill(['is_active' => true])->save();
+            $checksheet->forceFill(['is_active' => true])->save();
 
-        $this->activityLog->log(
-            request: $request,
-            moduleName: 'master_checksheet',
-            action: 'activate',
-            description: sprintf('Activate checksheet %s', $checksheet->checksheet_code),
-            tableName: 'pm_checksheets',
-            recordId: $checksheet->id,
-            oldValues: $oldValues,
-            newValues: $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']),
-        );
+            $this->activityLog->log(
+                request: $request,
+                moduleName: 'master_checksheet',
+                action: 'activate',
+                description: sprintf('Activate checksheet %s', $checksheet->checksheet_code),
+                tableName: 'pm_checksheets',
+                recordId: $checksheet->id,
+                oldValues: $oldValues,
+                newValues: $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']),
+            );
+        });
     }
 
     public function delete(Request $request, PmChecksheet $checksheet): void

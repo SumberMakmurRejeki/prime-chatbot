@@ -3,6 +3,7 @@
 namespace App\Services\PM;
 
 use App\Models\Machine;
+use App\Models\PmChecksheet;
 use App\Models\PmChecksheetPart;
 use App\Models\PmChecksheetStandard;
 use App\Models\PmExecution;
@@ -1127,7 +1128,9 @@ class PmExecutionService
 
     /**
      * Create or reuse exactly one canonical execution for machine/date/operator.
-     * Lock order: Machine → PmScheduleDate → PmExecution.
+     * Discovery tanpa lock hanya menentukan parent Checksheet, bukan state otoritatif.
+     * Resolusi otoritatif dalam transaksi dan recovery collision memakai urutan lock:
+     * Checksheet → Machine → PmScheduleDate (Occurrence) → PmExecution.
      * Legacy duplicate rows block replacement fail-closed.
      *
      * @throws ValidationException
@@ -1137,18 +1140,30 @@ class PmExecutionService
         Machine $machine,
         User $operator,
     ): PmExecution {
+        // Discovery tanpa lock hanya menentukan parent pertama. Setelah Checksheet
+        // dan Machine dikunci, occurrence serta provenance wajib dibaca ulang.
+        $discoveredDate = $this->findScheduleDateForExecutor($machine, false, true);
+        $checksheetId = $discoveredDate->schedule?->checksheetMachine?->pm_checksheet_id;
+        if ($checksheetId === null) {
+            throw ValidationException::withMessages([
+                'machine' => 'Checksheet PM tidak tersedia. Silakan muat ulang halaman.',
+            ]);
+        }
+
         $expectedCollision = false;
         $collisionScheduleDateId = null;
 
         try {
-            return DB::transaction(function () use ($request, $machine, $operator, &$expectedCollision, &$collisionScheduleDateId): PmExecution {
-                // Parent machine dikunci lebih dahulu agar seluruh writer mengikuti urutan lock yang sama.
+            return DB::transaction(function () use ($request, $machine, $operator, $checksheetId, &$expectedCollision, &$collisionScheduleDateId): PmExecution {
+                // Urutan yang sama dengan writer master: Checksheet -> Machine.
+                $lockedChecksheet = $this->lockChecksheetForStart((int) $checksheetId);
                 $lockedMachine = Machine::query()
                     ->whereKey($machine->id)
                     ->lockForUpdate()
                     ->firstOrFail();
 
                 $scheduleDate = $this->findScheduleDateForExecutor($lockedMachine, true, true);
+                $this->assertStartChecksheetProvenance($lockedChecksheet, $scheduleDate);
                 $collisionScheduleDateId = $scheduleDate->id;
 
                 // Occurrence dan execution dibaca ulang setelah parent lock, bukan dari context request.
@@ -1157,6 +1172,14 @@ class PmExecutionService
                     $this->assertStartableExecution($execution);
 
                     return $execution;
+                }
+
+                // Guard hanya untuk creation; execution yang sudah dimulai tetap
+                // memakai jalur continuation meski master kemudian nonaktif.
+                if (! $lockedChecksheet->is_active || $lockedChecksheet->trashed()) {
+                    throw ValidationException::withMessages([
+                        'machine' => 'Checksheet nonaktif. PM baru tidak dapat dimulai.',
+                    ]);
                 }
 
                 try {
@@ -1188,8 +1211,9 @@ class PmExecutionService
                 throw $exception;
             }
 
-            return DB::transaction(function () use ($machine, $collisionScheduleDateId, $exception): PmExecution {
-                // Setelah rollback, parent chain dikunci ulang untuk membaca row canonical authoritative.
+            return DB::transaction(function () use ($machine, $checksheetId, $collisionScheduleDateId, $exception): PmExecution {
+                // Recovery tidak membuat execution baru dan memakai lock order yang sama.
+                $lockedChecksheet = $this->lockChecksheetForStart((int) $checksheetId);
                 $lockedMachine = Machine::query()
                     ->whereKey($machine->id)
                     ->lockForUpdate()
@@ -1204,6 +1228,8 @@ class PmExecutionService
                 if (! $scheduleDate) {
                     throw $exception;
                 }
+
+                $this->assertStartChecksheetProvenance($lockedChecksheet, $scheduleDate);
 
                 $execution = $this->findCanonicalExecution($lockedMachine, $scheduleDate, true);
                 if (! $execution) {
@@ -1221,6 +1247,29 @@ class PmExecutionService
 
                 return $execution;
             });
+        }
+    }
+
+    private function lockChecksheetForStart(int $checksheetId): PmChecksheet
+    {
+        // Soft-deleted master tetap dapat menjadi parent continuation, bukan Start baru.
+        $checksheet = PmChecksheet::withTrashed()->whereKey($checksheetId)->lockForUpdate()->first();
+        if ($checksheet === null) {
+            throw ValidationException::withMessages([
+                'machine' => 'Checksheet PM tidak tersedia. Silakan muat ulang halaman.',
+            ]);
+        }
+
+        return $checksheet;
+    }
+
+    private function assertStartChecksheetProvenance(PmChecksheet $checksheet, PmScheduleDate $scheduleDate): void
+    {
+        if ((int) $scheduleDate->schedule?->checksheetMachine?->pm_checksheet_id !== (int) $checksheet->id) {
+            // Jangan mengambil parent Checksheet lain setelah Machine terkunci.
+            throw ValidationException::withMessages([
+                'machine' => 'Jadwal PM telah berubah. Silakan muat ulang halaman dan coba lagi.',
+            ]);
         }
     }
 
