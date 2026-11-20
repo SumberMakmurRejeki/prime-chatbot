@@ -177,12 +177,17 @@ class PmScheduleUpdateService
                     'start_date' => $floor->toDateString(),
                     'generate_until' => $window['generate_until'],
                 ]);
+                $desiredDates = array_values(array_filter($desiredDates, fn (string $date): bool => ! $schedule->isPausedOn($date)));
                 $desiredSet = array_fill_keys($desiredDates, true);
                 $scheduleDateMap = [];
 
                 foreach ($schedule->scheduleDates as $dateRow) {
                     $dateStr = $dateRow->scheduled_date->toDateString();
                     $scheduleDateMap[$dateStr] = true;
+                    if ($schedule->isPausedOn($dateStr)
+                        && $this->lifecyclePolicy->isMutableOccurrence($dateRow->status, $dateRow->executions->isNotEmpty())) {
+                        continue;
+                    }
 
                     // Baris sebelum floor dipertahankan apa adanya.
                     if ($dateRow->scheduled_date->lt($floor)) {
@@ -318,6 +323,13 @@ class PmScheduleUpdateService
                     'start_date' => $schedule->start_date?->toDateString(),
                     'generate_until' => $schedule->generate_until?->toDateString(),
                     'is_active' => $schedule->is_active,
+                    'pause_intervals' => $schedule->pauseIntervals()
+                        ->when(DB::transactionLevel() > 0, fn ($query) => $query->lockForUpdate())
+                        ->get()->map(fn ($interval): array => [
+                            'id' => $interval->id,
+                            'paused_on' => $interval->paused_on->toDateString(),
+                            'resumed_on' => $interval->resumed_on?->toDateString(),
+                        ])->all(),
                     'dates' => [],
                 ];
 

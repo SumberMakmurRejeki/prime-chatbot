@@ -206,11 +206,9 @@ class PmChecksheetService
                 throw new DomainException('Checksheet nonaktif tidak dapat disinkronkan.');
             }
 
-            // TASK-003 Slice 3: Ambil ID mesin yang memiliki jadwal aktif saja
-            // (bukan semua assignment) untuk menghindari lock berlebihan
+            // Lock semua assignment: Resume dapat membuat schedule aktif setelah discovery.
             $machineIds = PmChecksheetMachine::query()
                 ->where('pm_checksheet_id', $lockedChecksheet->id)
-                ->whereHas('schedules', fn ($q) => $q->active())
                 ->orderBy('machine_id', 'asc')
                 ->pluck('machine_id')
                 ->unique()
@@ -690,7 +688,7 @@ class PmChecksheetService
     private function activeSchedulesFor(int $checksheetId): Builder
     {
         return PmSchedule::query()
-            ->active()
+            ->where('lifecycle_status', 'active')
             ->whereHas('checksheetMachine', fn (Builder $query) => $query->where('pm_checksheet_id', $checksheetId))
             ->with('checksheetMachine.machine')
             ->orderBy('id');

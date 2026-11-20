@@ -838,6 +838,15 @@ class PmExecutionService
         bool $lock,
         bool $includeExistingExecution,
     ): ?PmScheduleDate {
+        if ($lock) {
+            // Machine sudah dikunci oleh writer; Schedule/interval mendahului Occurrence.
+            $schedules = PmSchedule::withTrashed()
+                ->whereHas('checksheetMachine', fn ($query) => $query->where('machine_id', $machine->id))
+                ->orderBy('id')->lockForUpdate()->get();
+            foreach ($schedules as $schedule) {
+                $schedule->pauseIntervals()->lockForUpdate()->get();
+            }
+        }
         $findDate = function (array $statuses, bool $liveEraOnly = false) use ($machine, $lock): ?PmScheduleDate {
             $query = PmScheduleDate::query()
                 ->where('machine_id', $machine->id)
@@ -848,6 +857,7 @@ class PmExecutionService
             // Kandidat start baru wajib berasal dari Schedule live; PAUSED/ENDED
             // bukan pekerjaan baru walaupun masih current era.
             if ($liveEraOnly) {
+                $query->withoutPauseGap();
                 $query->whereHas('schedule', function ($scheduleQuery): void {
                     $scheduleQuery->where('lifecycle_status', 'active');
                 });
@@ -1033,6 +1043,7 @@ class PmExecutionService
         }
 
         $nextExistingScheduleDate = PmScheduleDate::query()
+            ->withoutPauseGap()
             ->where('pm_schedule_id', $scheduleDate->pm_schedule_id)
             ->where('machine_id', $scheduleDate->machine_id)
             ->whereDate('scheduled_date', '>', $scheduleDate->scheduled_date?->toDateString())
@@ -1116,7 +1127,7 @@ class PmExecutionService
                 $shouldInclude = $cursor->day === $validDay;
             }
 
-            if ($shouldInclude) {
+            if ($shouldInclude && ! $schedule->isPausedOn($cursor->toDateString())) {
                 return $cursor;
             }
 
@@ -1130,7 +1141,7 @@ class PmExecutionService
      * Create or reuse exactly one canonical execution for machine/date/operator.
      * Discovery tanpa lock hanya menentukan parent Checksheet, bukan state otoritatif.
      * Resolusi otoritatif dalam transaksi dan recovery collision memakai urutan lock:
-     * Checksheet → Machine → PmScheduleDate (Occurrence) → PmExecution.
+     * Checksheet → Machine → Schedule/interval → Occurrence → Execution.
      * Legacy duplicate rows block replacement fail-closed.
      *
      * @throws ValidationException

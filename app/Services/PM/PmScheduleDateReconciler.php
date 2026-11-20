@@ -52,6 +52,12 @@ class PmScheduleDateReconciler
                 return $this->dormantResult();
             }
 
+            $assignment = $lockedSchedule->checksheetMachine()->first();
+            if ($assignment === null || (int) $assignment->machine_id !== (int) $machine->id) {
+                throw new InvalidScheduleTransitionException('Provenance assignment schedule berubah.');
+            }
+            $lockedSchedule->setRelation('pauseIntervals', $lockedSchedule->pauseIntervals()->lockForUpdate()->get());
+
             return $this->evaluate($lockedSchedule, $machine, true);
         });
     }
@@ -140,6 +146,7 @@ class PmScheduleDateReconciler
             'start_date' => $floor->toDateString(),
             'generate_until' => $schedule->generate_until,
         ]);
+        $desiredDates = array_values(array_filter($desiredDates, fn (string $date): bool => ! $schedule->isPausedOn($date)));
         $missingDates = array_fill_keys($desiredDates, true);
 
         $dateRowsQuery = PmScheduleDate::query()
@@ -162,6 +169,10 @@ class PmScheduleDateReconciler
 
         foreach ($dateRows as $dateRow) {
             $date = $dateRow->scheduled_date->toDateString();
+            if ($schedule->isPausedOn($date)
+                && $this->lifecyclePolicy->isMutableOccurrence($dateRow->status, (int) $dateRow->executions_with_trashed_count > 0)) {
+                continue;
+            }
 
             // Baris sebelum floor dipertahankan apa adanya: Slice A/LC-002
             // mencegah backlog baru, bukan menghapus/menggeser histori.

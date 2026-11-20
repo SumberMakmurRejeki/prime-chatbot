@@ -31,12 +31,14 @@ class MachineLandingService
             ->first();
 
         $nextPm = PmScheduleDate::query()
+            ->withoutPauseGap()
             ->where('machine_id', $machine->id)
             ->whereIn('status', ['scheduled', 'overdue'])
             ->orderBy('scheduled_date')
             ->first();
 
         $hasActivePmSchedule = PmScheduleDate::query()
+            ->withoutPauseGap()
             ->where('machine_id', $machine->id)
             ->whereIn('status', ['scheduled', 'overdue'])
             ->exists();
