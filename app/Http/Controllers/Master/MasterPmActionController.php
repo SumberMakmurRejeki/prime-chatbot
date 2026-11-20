@@ -27,8 +27,17 @@ class MasterPmActionController extends Controller
     public function index(Request $request): InertiaResponse
     {
         $search = trim($request->string('search')->toString());
+        $status = $request->string('status')->toString();
+
+        // Status kosong atau tak dikenal diperlakukan sebagai 'Semua' agar
+        // parameter query yang salah tidak pernah memicu error 500.
+        if (! in_array($status, ['active', 'inactive'], true)) {
+            $status = 'all';
+        }
 
         $actions = $this->actionService->query($search)
+            ->when($status === 'active', fn ($query) => $query->active())
+            ->when($status === 'inactive', fn ($query) => $query->inactive())
             ->paginate(10)
             ->withQueryString()
             ->through(fn (PmAction $action): array => [
@@ -43,7 +52,7 @@ class MasterPmActionController extends Controller
 
         return Inertia::render('Master/Action/Index', [
             'actions' => $actions,
-            'filters' => ['search' => $search],
+            'filters' => ['search' => $search, 'status' => $status],
             'storeUrl' => route('master-checksheet.actions.store'),
             'manageAi' => $this->primeAuth->role($request) === 'admin' && Gate::allows('manage_ai'),
             // Bell notifikasi shell admin tetap aktif; fallback kembali ke halaman Master Action.

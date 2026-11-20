@@ -172,6 +172,102 @@ class MasterPmActionTest extends TestCase
                 ->where('actions.data.0.action_label', 'GANTI BEARING'));
     }
 
+    public function test_master_action_status_defaults_to_all_and_invalid_values_are_normalized(): void
+    {
+        $active = PmAction::query()->create(['action_label' => 'ACTIVE', 'is_active' => true]);
+        $inactive = PmAction::query()->create(['action_label' => 'INACTIVE', 'is_active' => false]);
+
+        foreach (['', 'all', 'unexpected'] as $status) {
+            $url = '/pm/master-checksheet/actions'.($status === '' ? '' : '?status='.$status);
+            $this->actingAs($this->admin)
+                ->get($url)
+                ->assertOk()
+                ->assertInertia(fn (Assert $page) => $page
+                    ->component('Master/Action/Index')
+                    ->where('filters.search', '')
+                    ->where('filters.status', 'all')
+                    ->where('actions.total', 2)
+                    ->where('actions.data.0.id', $active->id)
+                    ->where('actions.data.0.is_active', true)
+                    ->where('actions.data.1.id', $inactive->id)
+                    ->where('actions.data.1.is_active', false));
+        }
+
+        // Parameter status tanpa nilai (mis. tautan lama) juga harus diperlakukan
+        // sebagai 'Semua', bukan men-trigger error.
+        $this->actingAs($this->admin)
+            ->get('/pm/master-checksheet/actions?status=')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'all')
+                ->where('actions.total', 2));
+    }
+
+    public function test_master_action_status_filters_active_and_inactive_with_search(): void
+    {
+        $activeMatch = PmAction::query()->create(['action_label' => 'BEARING ACTIVE', 'is_active' => true]);
+        PmAction::query()->create(['action_label' => 'BEARING INACTIVE', 'is_active' => false]);
+        PmAction::query()->create(['action_label' => 'OTHER ACTIVE', 'is_active' => true]);
+        $inactiveMatch = PmAction::query()->create(['action_label' => 'FILTER INACTIVE', 'is_active' => false]);
+
+        $this->actingAs($this->admin)
+            ->get('/pm/master-checksheet/actions?search=bearing&status=active')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.search', 'bearing')
+                ->where('filters.status', 'active')
+                ->where('actions.total', 1)
+                ->where('actions.data.0.id', $activeMatch->id)
+                ->where('actions.data.0.action_label', 'BEARING ACTIVE')
+                ->where('actions.data.0.is_active', true));
+
+        $this->actingAs($this->admin)
+            ->get('/pm/master-checksheet/actions?search=filter&status=inactive')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.search', 'filter')
+                ->where('filters.status', 'inactive')
+                ->where('actions.total', 1)
+                ->where('actions.data.0.id', $inactiveMatch->id)
+                ->where('actions.data.0.action_label', 'FILTER INACTIVE')
+                ->where('actions.data.0.is_active', false));
+
+        $this->actingAs($this->admin)
+            ->get('/pm/master-checksheet/actions?search=missing&status=active')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'active')
+                ->where('actions.total', 0)
+                ->has('actions.data', 0));
+    }
+
+    public function test_master_action_status_pagination_retains_status_and_search(): void
+    {
+        foreach (range(1, 11) as $number) {
+            PmAction::query()->create(['action_label' => sprintf('PAGE FILTER %02d', $number), 'is_active' => true]);
+        }
+        PmAction::query()->create(['action_label' => 'PAGE FILTER INACTIVE', 'is_active' => false]);
+
+        $this->actingAs($this->admin)
+            ->get('/pm/master-checksheet/actions?search=PAGE%20FILTER&status=active&page=2')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.search', 'PAGE FILTER')
+                ->where('filters.status', 'active')
+                ->where('actions.current_page', 2)
+                ->where('actions.total', 11)
+                ->where('actions.data.0.action_label', 'PAGE FILTER 11')
+                ->where('actions.data.0.is_active', true)
+                ->where('actions.prev_page_url', fn (string $url): bool => str_contains($url, 'search=PAGE%20FILTER') && str_contains($url, 'status=active')));
+    }
+
+    public function test_non_admin_cannot_open_master_action_with_status_filter(): void
+    {
+        $this->actingAs($this->operator)
+            ->get('/pm/master-checksheet/actions?search=restricted&status=inactive')
+            ->assertRedirect('/403');
+    }
+
     public function test_master_action_page_form_rejects_blank_label_with_redirect(): void
     {
         $this->actingAs($this->admin)

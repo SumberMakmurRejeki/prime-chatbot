@@ -12,13 +12,22 @@ const page = usePage<MasterActionProps>();
 const props = computed(() => page.props as MasterActionProps);
 const basePath = computed(() => String(page.url).split('?')[0]);
 const search = shallowRef(props.value.filters.search);
+const status = shallowRef(props.value.filters.status);
+
+function changeStatus(event: Event): void {
+    clearTimeout(searchTimer);
+    pendingSearch = null;
+    status.value = (event.target as HTMLSelectElement).value as MasterActionProps['filters']['status'];
+    visit({ status: status.value, search: search.value }, true);
+}
+
 const showForm = shallowRef(false);
 const selected = shallowRef<MasterAction | null>(null);
 const formMode = shallowRef<'create' | 'edit'>('create');
 const form = useForm({ action_label: '' });
 const formTitle = computed(() => formMode.value === 'edit' ? 'Edit Master Action' : 'Tambah Master Action');
 const commaGuidance = computed(() => form.action_label.includes(','));
-const isFilterActive = computed(() => Boolean(props.value.filters.search));
+const isFilterActive = computed(() => Boolean(props.value.filters.search || props.value.filters.status !== 'all'));
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingSearch: string | null = null;
 
@@ -27,6 +36,10 @@ const labelDescribedBy = computed(() => [
     commaGuidance.value ? 'master-action-comma-guidance' : null,
     form.errors.action_label ? 'master-action-error' : null,
 ].filter(Boolean).join(' '));
+
+watch(() => props.value.filters.status, (value) => {
+    status.value = value;
+});
 
 watch(() => props.value.filters.search, (value) => {
     if (value === pendingSearch) {
@@ -54,6 +67,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
 function buildQuery(changes: Record<string, string | number | undefined>, resetPage: boolean): Record<string, string | number> {
     const merged: Record<string, string | number | undefined> = {
         search: props.value.filters.search,
+        status: status.value,
         ...changes,
     };
     if (resetPage) {
@@ -180,13 +194,21 @@ function toggleStatus(action: MasterAction): void {
                         <PrimeIcon name="search" class="pointer-events-none absolute left-3 top-3 h-5 w-5 text-prime-muted" />
                         <input v-model="search" type="search" autocomplete="off" placeholder="Cari label action..." class="h-11 w-full rounded-micro border border-prime-border bg-white pl-10 pr-3 text-sm text-prime-text placeholder:text-prime-muted focus:border-prime-primary focus:outline-2 focus:outline-offset-1 focus:outline-prime-primary">
                     </label>
-                    <button v-if="isFilterActive" type="button" class="h-11 self-start rounded-micro border border-prime-border bg-white px-4 text-sm font-medium text-prime-ink hover:bg-prime-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-prime-primary sm:self-auto" @click="resetSearch">Reset pencarian</button>
+                    <label class="w-full sm:max-w-xs">
+                        <span class="sr-only">Filter status</span>
+                        <select :value="status" class="h-11 w-full rounded-micro border border-prime-border bg-white px-3 text-sm text-prime-text focus:outline-2 focus:outline-offset-1 focus:outline-prime-primary" @change="changeStatus">
+                            <option value="all">Semua</option>
+                            <option value="active">Aktif</option>
+                            <option value="inactive">Nonaktif</option>
+                        </select>
+                    </label>
+                    <button v-if="props.filters.search" type="button" class="h-11 self-start rounded-micro border border-prime-border bg-white px-4 text-sm font-medium text-prime-ink hover:bg-prime-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-prime-primary sm:self-auto" @click="resetSearch">Reset pencarian</button>
                 </div>
 
                 <div class="overflow-hidden rounded-card border border-prime-border bg-white">
                     <div v-if="props.actions.data.length === 0" class="px-6 py-14 text-center">
                         <h2 class="text-base font-semibold text-prime-ink">{{ isFilterActive ? 'Master Action tidak ditemukan' : 'Belum ada Master Action' }}</h2>
-                        <p class="mt-2 text-sm text-prime-muted">{{ isFilterActive ? 'Coba ubah kata kunci pencarian.' : 'Tambahkan pilihan action untuk standard pengecekan PM.' }}</p>
+                        <p class="mt-2 text-sm text-prime-muted">{{ isFilterActive ? 'Coba ubah filter status atau kata kunci pencarian.' : 'Tambahkan pilihan action untuk standard pengecekan PM.' }}</p>
                         <button v-if="!isFilterActive" type="button" class="mt-4 inline-flex min-h-11 items-center font-semibold text-prime-primary hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-prime-primary" @click="startCreate">Tambah Master Action</button>
                     </div>
 

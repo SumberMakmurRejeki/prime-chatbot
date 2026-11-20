@@ -154,7 +154,7 @@ export interface MasterActionProps extends PageProps {
         next_page_url: string | null;
         prev_page_url: string | null;
     };
-    filters: { search: string };
+    filters: { search: string; status: 'all' | 'active' | 'inactive' };
     storeUrl: string;
     flash: { success: string | null; error: string | null };
     errors: Record<string, string>;
