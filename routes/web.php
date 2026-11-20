@@ -144,6 +144,8 @@ Route::middleware(['prime.auth', 'prime.operator.session'])->group(function (): 
         Route::patch('/actions/{action}/aktifkan', [MasterPmActionController::class, 'activate'])->name('master-checksheet.actions.activate');
         Route::patch('/actions/{action}/nonaktifkan', [MasterPmActionController::class, 'deactivate'])->name('master-checksheet.actions.deactivate');
         Route::post('/{id}/reconcile-schedule-dates', [MasterPmChecksheetController::class, 'reconcileScheduleDates'])->name('master-checksheet.reconcile-schedule-dates');
+        Route::patch('/{id}/schedules/{scheduleId}/pause', [MasterPmChecksheetController::class, 'pauseSchedule'])->name('master-checksheet.schedules.pause');
+        Route::patch('/{id}/schedules/{scheduleId}/resume', [MasterPmChecksheetController::class, 'resumeSchedule'])->name('master-checksheet.schedules.resume');
         // Slice 2: preview (tanpa tulis DB) dan apply (dengan transaksi + lock)
         // untuk update jadwal PM dari halaman edit wizard.
         Route::post('/{id}/preview-schedule-update', [MasterPmChecksheetController::class, 'previewScheduleUpdate'])->name('master-checksheet.preview-schedule-update');
