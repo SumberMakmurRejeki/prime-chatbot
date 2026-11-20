@@ -6,6 +6,7 @@ use App\Models\Machine;
 use App\Models\PmSchedule;
 use App\Models\PmScheduleDate;
 use App\Services\Notification\AdminNotificationService;
+use App\Services\PM\BusinessDate;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -38,7 +39,7 @@ class SyncPmScheduleStatusCommand extends Command
      */
     public function handle(): int
     {
-        $today = now()->startOfDay();
+        $today = BusinessDate::today();
         $overdueCount = 0;
         $missedCount = 0;
 
@@ -56,19 +57,16 @@ class SyncPmScheduleStatusCommand extends Command
             })
             ->get();
 
-        // Batas tanggal untuk membedakan normal overdue (kemarin) dan catch-up (sebelum kemarin).
-        $yesterdayString = $today->copy()->subDay()->toDateString();
-
         foreach ($overdueSchedules as $scheduleDate) {
             // Lock lifecycle, CAS, dan notifikasi berada dalam satu transaksi:
             // Pause menunggu commit, sedangkan kegagalan notifikasi membatalkan aging.
-            $transitioned = DB::transaction(function () use ($scheduleDate, $yesterdayString): bool {
+            $transitioned = DB::transaction(function () use ($scheduleDate, $today): bool {
                 if (! $this->transitionIfStillEligible($scheduleDate, 'scheduled', 'overdue')) {
                     return false;
                 }
 
                 // Catch-up intermediate tidak menghasilkan pm_overdue.
-                if ($scheduleDate->scheduled_date->toDateString() >= $yesterdayString) {
+                if ($scheduleDate->schedule->activeAge($scheduleDate->scheduled_date->toDateString(), $today->toDateString()) === 1) {
                     $this->notificationService->createUnique(
                         notificationType: 'pm_overdue',
                         title: sprintf(
@@ -180,6 +178,17 @@ class SyncPmScheduleStatusCommand extends Command
             || ! $schedule->checksheetMachine()->where('machine_id', $machine->id)->exists()) {
             return false;
         }
+
+        $schedule->setRelation('pauseIntervals', $schedule->pauseIntervals()->lockForUpdate()->get());
+        $age = $schedule->activeAge(
+            $scheduleDate->scheduled_date->toDateString(),
+            BusinessDate::today()->toDateString(),
+        );
+        if ($schedule->isPausedOn($scheduleDate->scheduled_date->toDateString())
+            || $age < ($nextStatus === 'missed' ? 2 : 1)) {
+            return false;
+        }
+        $scheduleDate->setRelation('schedule', $schedule);
 
         $affected = PmScheduleDate::query()
             ->whereKey($scheduleDate->getKey())

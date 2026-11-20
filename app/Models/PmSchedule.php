@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -54,6 +55,44 @@ class PmSchedule extends Model
     public function scheduleDates(): HasMany
     {
         return $this->hasMany(PmScheduleDate::class);
+    }
+
+    public function pauseIntervals(): HasMany
+    {
+        return $this->hasMany(PmSchedulePauseInterval::class)->orderBy('id');
+    }
+
+    public function isPausedOn(string $date): bool
+    {
+        return $this->pauseIntervals->contains(
+            fn (PmSchedulePauseInterval $interval): bool => $interval->paused_on->toDateString() <= $date
+                && ($interval->resumed_on === null || $date < $interval->resumed_on->toDateString()),
+        );
+    }
+
+    /**
+     * Hitung union interval pada [due, today), bukan durasi timestamp/DST.
+     */
+    public function activeAge(string $due, string $today): int
+    {
+        $start = Carbon::parse($due, 'UTC')->startOfDay();
+        $end = Carbon::parse($today, 'UTC')->startOfDay();
+        if ($start->gte($end)) {
+            return 0;
+        }
+
+        $pausedDays = 0;
+        $coveredUntil = $due;
+        foreach ($this->pauseIntervals->sortBy('paused_on') as $interval) {
+            $from = max($due, $coveredUntil, $interval->paused_on->toDateString());
+            $until = min($today, $interval->resumed_on?->toDateString() ?? $today);
+            if ($from < $until) {
+                $pausedDays += (int) Carbon::parse($from, 'UTC')->diffInDays(Carbon::parse($until, 'UTC'));
+                $coveredUntil = $until;
+            }
+        }
+
+        return (int) $start->diffInDays($end) - $pausedDays;
     }
 
     public function scopeActive(Builder $query): void
