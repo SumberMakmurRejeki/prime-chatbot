@@ -1230,6 +1230,238 @@ class MasterPmChecksheetTest extends TestCase
             ->assertSee('LEGACY ACTION');
     }
 
+    public function test_admin_can_pause_and_resume_a_schedule_from_its_checksheet(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-15 00:00:00', 'Asia/Jakarta'));
+        [$checksheet, $schedule] = $this->createLifecycleSchedule('PM-LIFECYCLE-HTTP');
+        $scheduleDate = PmScheduleDate::query()->create([
+            'pm_schedule_id' => $schedule->id,
+            'machine_id' => $this->machine->id,
+            'scheduled_date' => '2026-06-20',
+            'status' => 'scheduled',
+            'generated_at' => now(),
+        ]);
+
+        $this->actingAs($this->admin)
+            ->get(route('master-checksheet.show', $checksheet->id))
+            ->assertOk()
+            ->assertSee('Pengaturan Jadwal PM')
+            ->assertSee('Setiap hari')
+            ->assertSee('Pause Jadwal');
+
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.pause', [$checksheet->id, $schedule->id]),
+            ['confirmed' => '1', 'reason' => 'Pemeriksaan keselamatan'],
+        )->assertRedirect(route('master-checksheet.show', $checksheet->id));
+
+        $this->assertSame('paused', $schedule->fresh()->lifecycle_status);
+        $this->assertFalse((bool) $schedule->fresh()->is_active);
+        $interval = $schedule->pauseIntervals()->firstOrFail();
+        $this->assertSame('2026-06-15', $interval->paused_on->toDateString());
+        $this->assertNull($interval->resumed_on);
+        $this->assertSame(1, DB::table('user_activity_logs')
+            ->where('module_name', 'pm_schedule')
+            ->where('action', 'lifecycle_transition')
+            ->where('record_id', $schedule->id)
+            ->where('user_id', $this->admin->id)
+            ->count());
+
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.resume', [$checksheet->id, $schedule->id]),
+            ['confirmed' => '1', 'reason' => 'Pemeriksaan selesai'],
+        )->assertRedirect(route('master-checksheet.show', $checksheet->id));
+
+        $this->assertSame('active', $schedule->fresh()->lifecycle_status);
+        $this->assertTrue((bool) $schedule->fresh()->is_active);
+        $this->assertSame('2026-06-15', $interval->fresh()->resumed_on->toDateString());
+        $this->assertSame(1, PmScheduleDate::query()->whereKey($scheduleDate->id)->count());
+        $this->assertSame(2, DB::table('user_activity_logs')
+            ->where('module_name', 'pm_schedule')
+            ->where('action', 'lifecycle_transition')
+            ->where('record_id', $schedule->id)
+            ->count());
+    }
+
+    public function test_schedule_lifecycle_controls_are_scoped_and_require_confirmation(): void
+    {
+        [$checksheet, $schedule] = $this->createLifecycleSchedule('PM-LIFECYCLE-SCOPE');
+        [$otherChecksheet] = $this->createLifecycleSchedule('PM-LIFECYCLE-OTHER', $this->otherMachine());
+
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.pause', [$checksheet->id, $schedule->id]),
+            ['confirmed' => '1'],
+        )->assertRedirect(route('master-checksheet.show', $checksheet->id));
+        $this->assertSame('paused', $schedule->fresh()->lifecycle_status);
+        $this->assertSame(1, $schedule->pauseIntervals()->count());
+        $this->assertSame(1, DB::table('user_activity_logs')
+            ->where('module_name', 'pm_schedule')
+            ->where('action', 'lifecycle_transition')
+            ->where('record_id', $schedule->id)
+            ->where('user_id', $this->admin->id)
+            ->whereNull('description')
+            ->count());
+
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.pause', [$otherChecksheet->id, $schedule->id]),
+            ['confirmed' => '1', 'reason' => 'Alasan valid'],
+        )->assertNotFound();
+        $this->assertSame('paused', $schedule->fresh()->lifecycle_status);
+        $this->assertSame(1, $schedule->pauseIntervals()->count());
+
+        $anotherSchedule = $this->createLifecycleSchedule('PM-LIFECYCLE-VALIDATION')[1];
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.pause', [$anotherSchedule->checksheetMachine->pm_checksheet_id, $anotherSchedule->id]),
+            ['reason' => 'Alasan valid'],
+        )->assertSessionHasErrors('confirmed');
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.pause', [$anotherSchedule->checksheetMachine->pm_checksheet_id, $anotherSchedule->id]),
+            ['confirmed' => '1', 'reason' => '   '],
+        )->assertSessionHasErrors('reason');
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.pause', [$anotherSchedule->checksheetMachine->pm_checksheet_id, $anotherSchedule->id]),
+            ['confirmed' => '1', 'reason' => str_repeat('a', 1001)],
+        )->assertSessionHasErrors('reason');
+        $this->assertSame('active', $anotherSchedule->fresh()->lifecycle_status);
+        $this->assertSame(0, $anotherSchedule->pauseIntervals()->count());
+    }
+
+    public function test_non_admin_cannot_mutate_a_schedule_lifecycle(): void
+    {
+        [$checksheet, $schedule] = $this->createLifecycleSchedule('PM-LIFECYCLE-AUTH');
+
+        $this->actingAs($this->operator)->patch(
+            route('master-checksheet.schedules.pause', [$checksheet->id, $schedule->id]),
+            ['confirmed' => '1', 'reason' => 'Alasan valid'],
+        )->assertRedirect('/403');
+        $this->assertSame('active', $schedule->fresh()->lifecycle_status);
+        $this->assertSame(0, $schedule->pauseIntervals()->count());
+    }
+
+    public function test_repeated_pause_is_rejected_without_duplicate_interval_or_audit(): void
+    {
+        [$checksheet, $schedule] = $this->createLifecycleSchedule('PM-LIFECYCLE-REPEAT');
+        $url = route('master-checksheet.schedules.pause', [$checksheet->id, $schedule->id]);
+
+        $this->actingAs($this->admin)->patch($url, ['confirmed' => '1'])->assertRedirect();
+        $this->actingAs($this->admin)->patch($url, ['confirmed' => '1'])->assertRedirect();
+
+        $this->assertSame('paused', $schedule->fresh()->lifecycle_status);
+        $this->assertSame(1, $schedule->pauseIntervals()->count());
+        $this->assertSame(1, DB::table('user_activity_logs')->where('record_id', $schedule->id)->where('action', 'lifecycle_transition')->count());
+    }
+
+    public function test_ended_schedule_cannot_be_paused(): void
+    {
+        [$checksheet, $schedule] = $this->createLifecycleSchedule('PM-LIFECYCLE-ENDED');
+        $schedule->forceFill(['lifecycle_status' => 'ended', 'is_active' => false])->save();
+
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.pause', [$checksheet->id, $schedule->id]),
+            ['confirmed' => '1'],
+        )->assertRedirect();
+
+        $this->assertSame('ended', $schedule->fresh()->lifecycle_status);
+        $this->assertSame(0, $schedule->pauseIntervals()->count());
+        $this->assertSame(0, DB::table('user_activity_logs')->where('record_id', $schedule->id)->where('action', 'lifecycle_transition')->count());
+    }
+
+    public function test_legacy_paused_schedule_without_interval_cannot_be_resumed(): void
+    {
+        [$checksheet, $schedule] = $this->createLifecycleSchedule('PM-LIFECYCLE-LEGACY');
+        $schedule->forceFill(['lifecycle_status' => 'paused', 'is_active' => false])->save();
+
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.resume', [$checksheet->id, $schedule->id]),
+            ['confirmed' => '1'],
+        )->assertRedirect();
+
+        $this->assertSame('paused', $schedule->fresh()->lifecycle_status);
+        $this->assertSame(0, $schedule->pauseIntervals()->count());
+        $this->assertSame(0, DB::table('user_activity_logs')->where('record_id', $schedule->id)->where('action', 'lifecycle_transition')->count());
+    }
+
+    public function test_unauthenticated_user_cannot_mutate_schedule_lifecycle(): void
+    {
+        [$checksheet, $schedule] = $this->createLifecycleSchedule('PM-LIFECYCLE-GUEST');
+
+        $this->patch(
+            route('master-checksheet.schedules.pause', [$checksheet->id, $schedule->id]),
+            ['confirmed' => '1'],
+        )->assertRedirect('/login');
+
+        $this->assertSame('active', $schedule->fresh()->lifecycle_status);
+        $this->assertSame(0, $schedule->pauseIntervals()->count());
+        $this->assertSame(0, DB::table('user_activity_logs')->where('record_id', $schedule->id)->where('action', 'lifecycle_transition')->count());
+    }
+
+    public function test_schedule_lifecycle_audit_failure_rolls_back_pause(): void
+    {
+        [$checksheet, $schedule] = $this->createLifecycleSchedule('PM-LIFECYCLE-ROLLBACK');
+        $this->mock(ActivityLogService::class, function ($mock): void {
+            $mock->shouldReceive('log')->once()->andThrow(new \RuntimeException('Audit unavailable'));
+        });
+
+        $this->actingAs($this->admin)->patch(
+            route('master-checksheet.schedules.pause', [$checksheet->id, $schedule->id]),
+            ['confirmed' => '1', 'reason' => 'Alasan valid'],
+        )->assertRedirect(route('master-checksheet.show', $checksheet->id));
+
+        $this->assertSame('active', $schedule->fresh()->lifecycle_status);
+        $this->assertTrue((bool) $schedule->fresh()->is_active);
+        $this->assertSame(0, $schedule->pauseIntervals()->count());
+        $this->assertSame(0, DB::table('user_activity_logs')
+            ->where('module_name', 'pm_schedule')
+            ->where('record_id', $schedule->id)
+            ->count());
+    }
+
+    /**
+     * @return array{0: PmChecksheet, 1: PmSchedule}
+     */
+    private function createLifecycleSchedule(string $code, ?Machine $machine = null): array
+    {
+        $checksheet = PmChecksheet::query()->create([
+            'checksheet_code' => $code,
+            'checksheet_name' => 'Lifecycle test schedule',
+            'is_active' => true,
+            'created_by' => $this->admin->id,
+        ]);
+        $assignment = PmChecksheetMachine::query()->create([
+            'pm_checksheet_id' => $checksheet->id,
+            'machine_id' => ($machine ?? $this->machine)->id,
+            'created_by' => $this->admin->id,
+        ]);
+        $schedule = PmSchedule::query()->create([
+            'pm_checksheet_machine_id' => $assignment->id,
+            'frequency_type' => 'daily',
+            'operational_from' => '2026-06-01',
+            'start_date' => '2026-06-01',
+            'generate_until' => '2026-07-01',
+            'is_active' => true,
+            'lifecycle_status' => 'active',
+            'created_by' => $this->admin->id,
+        ]);
+
+        return [$checksheet, $schedule];
+    }
+
+    private function otherMachine(): Machine
+    {
+        $location = Location::query()->create([
+            'location_code' => 'LOC-OTHER',
+            'location_name' => 'Other location',
+            'is_active' => true,
+        ]);
+
+        return Machine::query()->create([
+            'location_id' => $location->id,
+            'machine_code' => 'MC-OTHER',
+            'machine_name' => 'Other Machine',
+            'qr_token' => 'qr-mc-other',
+            'is_active' => true,
+        ]);
+    }
+
     /**
      * Payload wizard dengan action_ids harus menyimpan pivot urut 1-based sesuai
      * urutan pilihan user, dan tidak boleh menulis kolom legacy action_options.

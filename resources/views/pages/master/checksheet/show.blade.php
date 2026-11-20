@@ -86,17 +86,53 @@
 
         <x-ui.card>
             <h3 class="text-xl font-semibold">Pengaturan Jadwal PM</h3>
-            @php $schedule = $checksheet->machineAssignments->first()?->schedules->first(); @endphp
-            @if ($schedule)
-                <div class="mt-4 grid gap-4 md:grid-cols-4 text-sm">
-                    <div><p class="text-[var(--color-prime-muted)]">Frekuensi</p><p class="font-semibold">{{ ucfirst($schedule->frequency_type) }}</p></div>
-                    <div><p class="text-[var(--color-prime-muted)]">Waktu</p><p class="font-semibold">{{ $schedule->frequency_type === 'weekly' ? implode(', ', $schedule->weekly_days ?? []) : ($schedule->frequency_type === 'monthly' ? 'Tanggal '.$schedule->monthly_day : 'Setiap hari') }}</p></div>
-                    <div><p class="text-[var(--color-prime-muted)]">{{ $schedule->operational_from === null ? 'Operational window' : 'Mulai Generate' }}</p><p class="font-semibold">{{ $schedule->operational_from === null ? 'Operational window belum ditentukan (legacy)' : optional($schedule->start_date)->format('Y-m-d') }}</p></div>
-                    <div><p class="text-[var(--color-prime-muted)]">Berakhir Pada</p><p class="font-semibold">{{ optional($schedule->generate_until)->format('Y-m-d') }}</p></div>
-                </div>
-            @else
+            @php $hasSchedules = false; @endphp
+            @foreach ($checksheet->machineAssignments as $assignment)
+                @foreach ($assignment->schedules as $schedule)
+                    @php $hasSchedules = true; @endphp
+                    <div class="mt-4 space-y-4 rounded-xl border border-[var(--color-prime-border)] p-4">
+                        <div class="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <p class="font-semibold">{{ $assignment->machine?->machine_code }} - {{ $assignment->machine?->machine_name }}</p>
+                                <p class="text-sm text-[var(--color-prime-muted)]">Jadwal #{{ $schedule->id }}</p>
+                            </div>
+                            <x-ui.badge :variant="$schedule->lifecycle_status === 'active' ? 'success' : ($schedule->lifecycle_status === 'paused' ? 'warning' : 'neutral')">{{ ucfirst($schedule->lifecycle_status) }}</x-ui.badge>
+                        </div>
+                        <div class="grid gap-4 text-sm md:grid-cols-4">
+                            <div><p class="text-[var(--color-prime-muted)]">Frekuensi</p><p class="font-semibold">{{ ucfirst($schedule->frequency_type) }}</p></div>
+                        <div><p class="text-[var(--color-prime-muted)]">Waktu</p><p class="font-semibold">{{ $schedule->frequency_type === 'weekly' ? implode(', ', $schedule->weekly_days ?? []) : ($schedule->frequency_type === 'monthly' ? 'Tanggal '.$schedule->monthly_day : 'Setiap hari') }}</p></div>
+                        <div><p class="text-[var(--color-prime-muted)]">{{ $schedule->operational_from === null ? 'Operational window' : 'Mulai Generate' }}</p><p class="font-semibold">{{ $schedule->operational_from === null ? 'Operational window belum ditentukan (legacy)' : optional($schedule->start_date)->format('Y-m-d') }}</p></div>
+                            <div><p class="text-[var(--color-prime-muted)]">Berakhir Pada</p><p class="font-semibold">{{ optional($schedule->generate_until)->format('Y-m-d') }}</p></div>
+                        </div>
+                        @if ($schedule->lifecycle_status === 'active')
+                            <form action="{{ route('master-checksheet.schedules.pause', [$checksheet->id, $schedule->id]) }}" method="POST" class="space-y-3 border-t border-[var(--color-prime-border)] pt-3">
+                                @csrf
+                                @method('PATCH')
+                                <label class="flex items-start gap-2 text-sm"><input type="checkbox" name="confirmed" value="1" required><span>Saya mengonfirmasi jeda jadwal ini.</span></label>
+                                <label class="block text-sm">Alasan (opsional)<textarea name="reason" maxlength="1000" class="mt-1 w-full rounded-lg border border-[var(--color-prime-border)] p-2">{{ old('reason') }}</textarea></label>
+                                @error('confirmed')<p class="text-sm text-[var(--color-prime-danger)]">{{ $message }}</p>@enderror
+                                @error('reason')<p class="text-sm text-[var(--color-prime-danger)]">{{ $message }}</p>@enderror
+                                <x-ui.button type="submit" variant="secondary" size="sm">Pause Jadwal</x-ui.button>
+                            </form>
+                        @elseif ($schedule->lifecycle_status === 'paused' && $schedule->pauseIntervals->whereNull('resumed_on')->count() === 1)
+                            <form action="{{ route('master-checksheet.schedules.resume', [$checksheet->id, $schedule->id]) }}" method="POST" class="space-y-3 border-t border-[var(--color-prime-border)] pt-3">
+                                @csrf
+                                @method('PATCH')
+                                <label class="flex items-start gap-2 text-sm"><input type="checkbox" name="confirmed" value="1" required><span>Saya mengonfirmasi melanjutkan jadwal ini.</span></label>
+                                <label class="block text-sm">Alasan (opsional)<textarea name="reason" maxlength="1000" class="mt-1 w-full rounded-lg border border-[var(--color-prime-border)] p-2">{{ old('reason') }}</textarea></label>
+                                @error('confirmed')<p class="text-sm text-[var(--color-prime-danger)]">{{ $message }}</p>@enderror
+                                @error('reason')<p class="text-sm text-[var(--color-prime-danger)]">{{ $message }}</p>@enderror
+                                <x-ui.button type="submit" variant="secondary" size="sm">Resume Jadwal</x-ui.button>
+                            </form>
+                        @elseif ($schedule->lifecycle_status === 'paused')
+                            <x-ui.alert variant="warning">Jadwal legacy tidak memiliki interval pause yang dapat diverifikasi; Resume dinonaktifkan.</x-ui.alert>
+                        @endif
+                    </div>
+                @endforeach
+            @endforeach
+            @unless ($hasSchedules)
                 <p class="mt-3 text-sm text-[var(--color-prime-muted)]">Belum ada jadwal.</p>
-            @endif
+            @endunless
         </x-ui.card>
 
         <x-ui.card class="space-y-5" title="Sinkronisasi Jadwal PM" subtitle="Preview ini tidak mengubah data. Terapkan hanya setelah seluruh perubahan ditinjau.">

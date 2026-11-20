@@ -13,6 +13,8 @@ use App\Models\PmChecksheet;
 use App\Services\Auth\PrimeAuthService;
 use App\Services\Master\PmChecksheetService;
 use App\Services\Master\PmScheduleUpdateService;
+use App\Services\PM\InvalidScheduleTransitionException;
+use App\Services\PM\ScheduleLifecycleService;
 use App\Services\PM\StalePreviewException;
 use DomainException;
 use Illuminate\Http\JsonResponse;
@@ -26,6 +28,7 @@ class MasterPmChecksheetController extends Controller
     public function __construct(
         protected PmChecksheetService $checksheetService,
         protected PmScheduleUpdateService $scheduleUpdateService,
+        protected ScheduleLifecycleService $scheduleLifecycleService,
         protected PrimeAuthService $primeAuth,
     ) {}
 
@@ -132,6 +135,54 @@ class MasterPmChecksheetController extends Controller
         return redirect()
             ->route('master-checksheet.show', $checksheet->id)
             ->with('flash_success', 'Sinkronisasi jadwal PM berhasil diterapkan.');
+    }
+
+    public function pauseSchedule(Request $request, int $checksheetId, int $scheduleId): RedirectResponse
+    {
+        return $this->transitionScheduleLifecycle($request, $checksheetId, $scheduleId, 'paused');
+    }
+
+    public function resumeSchedule(Request $request, int $checksheetId, int $scheduleId): RedirectResponse
+    {
+        return $this->transitionScheduleLifecycle($request, $checksheetId, $scheduleId, 'active');
+    }
+
+    protected function transitionScheduleLifecycle(Request $request, int $checksheetId, int $scheduleId, string $target): RedirectResponse
+    {
+        $request->validate([
+            'confirmed' => ['accepted'],
+            'reason' => ['sometimes', 'string', 'max:1000', 'filled'],
+        ]);
+
+        $checksheet = $this->findChecksheet($checksheetId);
+        $schedule = $checksheet->machineAssignments
+            ->flatMap(fn ($assignment) => $assignment->schedules)
+            ->firstWhere('id', $scheduleId);
+
+        if ($schedule === null) {
+            abort(404);
+        }
+
+        $reason = $request->string('reason')->trim()->toString();
+        $reason = $reason === '' ? null : $reason;
+
+        try {
+            $this->scheduleLifecycleService->transition($schedule, $target, $reason);
+        } catch (InvalidScheduleTransitionException $exception) {
+            return redirect()
+                ->route('master-checksheet.show', $checksheet->id)
+                ->with('flash_error', $exception->getMessage());
+        } catch (Throwable) {
+            return redirect()
+                ->route('master-checksheet.show', $checksheet->id)
+                ->with('flash_error', 'Terjadi kesalahan saat memperbarui lifecycle jadwal PM. Silakan coba lagi.');
+        }
+
+        $flash = $target === 'paused' ? 'Jadwal PM berhasil dijeda.' : 'Jadwal PM berhasil dilanjutkan.';
+
+        return redirect()
+            ->route('master-checksheet.show', $checksheet->id)
+            ->with('flash_success', $flash);
     }
 
     /**
@@ -261,6 +312,7 @@ class MasterPmChecksheetController extends Controller
                 'machineAssignments.machine.location',
                 'machineAssignments.parts.standards.actions',
                 'machineAssignments.schedules.scheduleDates',
+                'machineAssignments.schedules.pauseIntervals',
             ])
             ->findOrFail($checksheetId);
     }
