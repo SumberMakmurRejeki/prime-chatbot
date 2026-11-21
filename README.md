@@ -16,11 +16,21 @@ its databases are separate and must not be modified from here.
 | Local path | `C:\laragon\www\prime-google` |
 | Repository | `SumberMakmurRejeki/prime-chatbot` (GitHub remote `origin`) |
 
-The initial baseline commit and the agent-foundation commit are both present in
-this repository's history, and the current branch is published to `origin`.
-The agent-foundation commit contains 35 files. Run `git status` for the current
-working-tree state; historical status observations do not describe later
-changes.
+Branch and release status change over time; consult Git for the current state.
+The hub [Project State](Docs/prime-task-hub/PROJECT_STATE.md) distinguishes
+implemented behavior from local candidates, historical verification, and work
+that is not released or operationally activated.
+
+## Current task state
+
+Current task status and ownership live in the [PRIME Task Hub](Docs/prime-task-hub/PRIME_TASK_INDEX.md):
+
+- [Task Index](Docs/prime-task-hub/PRIME_TASK_INDEX.md) — parent tasks and children.
+- [Active Work](Docs/prime-task-hub/PRIME_ACTIVE_WORK.md) — current owners and handoffs.
+- [Project State](Docs/prime-task-hub/PROJECT_STATE.md) — code, PR, and release baseline.
+
+Historical source documents are preserved under the hub's `archive/`; archived
+plans and QA results describe their original checkpoints, not current status.
 
 ## Current capabilities
 
@@ -35,108 +45,67 @@ project:
 - In-app notifications and application settings. Web Push was removed from the
   runtime; only a legacy service-worker cleanup shim and the `push_subscriptions`
   schema remain (see "Database identities" for the guarded secondary connection).
-- An AI assistant over the knowledge-document registry, backed by the
-  temporary Qdrant vector store (see "AI subsystem status").
+- Main uses the temporary Qdrant vector store for the AI assistant. Gemini File
+  Search is its replacement with local candidate work only; it is not merged
+  into `main`. Activation requires separate verification and Owner approval.
 
-## Stack and prerequisites
+## Business roles
 
-| Component | Requirement |
-|---|---|
-| Laravel | 13.35.0 (`composer.lock`) |
-| PHP | 8.3.36 (verified runtime; `composer.json` requires `^8.3`) |
-| Composer | 2.x, matching the existing `composer.lock` |
-| Node.js | Any current LTS that satisfies the existing `package-lock.json` (Vite 6, Vue 3.5, Tailwind 4) |
-| MySQL | One server hosting the development database and the QA database |
-| Qdrant | Temporary legacy dependency for AI retrieval/indexing; not needed for setup, tests or non-AI web pages |
+PRIME has two business roles:
 
-## Independent local setup
+- **Admin** — administration/master data, checksheets, settings and permitted
+  AI features. Admin does not run PM Executor.
+- **Operator** — runs PM Executor and Input Breakdown. Operator does not access
+  Admin or AI menus.
 
-1. Install PHP dependencies with `composer install` (lockfile unchanged).
-2. Copy `.env.example` to `.env`, then run `php artisan key:generate`.
-3. Set `DB_USERNAME` and `DB_PASSWORD` for the development database.
-4. Create the development database `db_preventive_maintenance_ai` and run
-   `php artisan migrate` only against this approved development database.
-   Never target either protected original PRIME database or an unapproved one.
-5. Install frontend dependencies with `npm ci`, then `npm run build`.
+Permissions are enforced on the backend, not only by hiding UI. The separate
+`manage_ai` permission governs AI settings independently of the Admin role.
 
-Setup assumes PHP, Composer and Node are on `PATH`. Select the verified PHP
-8.3.36 binary explicitly when several versions are installed, for example:
+## Stack and local setup
 
-```
-C:\laragon\bin\php\php-8.3.36-nts-Win32-vs16-x64\php.exe artisan --version
-```
+Laravel 13.35, PHP 8.3.36, Composer 2.x, Vue 3.5/Inertia, Node LTS, and MySQL.
+Laragon workspace: `C:\laragon\www\prime-google`; use Laragon's PHP 8.3.36
+binary explicitly if multiple PHP versions are installed.
 
-## Business dates and application timezone
+1. Run `composer install`; copy `.env.example` to `.env`, set credentials, then
+   run `php artisan key:generate`.
+2. Configure only the approved development database and run migrations there.
+3. Run `npm ci` and `npm run build`.
 
-Business dates use `Asia/Jakarta` in the PM date logic. The global Laravel
-application timezone is `UTC` (`config/app.php`, overridable through
-`APP_TIMEZONE`) and changes only with separate approval. Do not set the global
-timezone to `Asia/Jakarta` as a setup shortcut; use the PM business-date helper
-for business-day logic instead.
+## Environment and database safety
 
-## Environment templates
+`.env.example` is for development (`db_preventive_maintenance_ai`,
+`prime_google_knowledge`); `.env.testing.example` is for QA
+(`db_preventive_maintenance_ai_test`, `prime_google_qa_knowledge`). The only
+approved MySQL databases are those two. `db_preventive_maintenance` and
+`db_preventive_maintenance_test` are protected originals. The testing database
+is for explicit QA commands only; PHPUnit never uses MySQL.
 
-- `.env.example` — development template; `APP_ENV=local`, MySQL
-  `db_preventive_maintenance_ai`, collection `prime_google_knowledge`.
-- `.env.testing.example` — QA/testing template; `APP_ENV=testing`, MySQL
-  `db_preventive_maintenance_ai_test`, collection `prime_google_qa_knowledge`.
+`TestingDatabaseServiceProvider` rejects protected MySQL connections in every
+environment and requires the approved QA database in `testing`; the guard also
+covers `webpush.database_connection`. Do not commit `.env` or credentials.
 
-Both templates are part of the baseline. Local `.env` files are ignored and must
-never be committed. Fill secrets per machine; no real credential belongs here.
+PM business dates use `Asia/Jakarta`; Laravel's global timezone remains `UTC`
+unless separately approved. Use PM business-date logic rather than changing the
+global timezone.
 
-## Database identities
+## Testing
 
-| Purpose | Database |
-|---|---|
-| Development | `db_preventive_maintenance_ai` |
-| QA/testing | `db_preventive_maintenance_ai_test` |
-| Protected original | `db_preventive_maintenance` |
-| Protected original | `db_preventive_maintenance_test` |
-
-`app/Providers/TestingDatabaseServiceProvider.php` enforces this contract at
-boot: any effective MySQL connection pointing at a protected original database
-raises `RuntimeException` in every environment, and the `testing` environment
-must point at the approved QA database. The guard also covers the
-`webpush.database_connection` secondary connection.
-
-## Testing isolation contract
-
-`phpunit.xml` pins the test environment so a local `.env` cannot leak into
-tests: SQLite `:memory:`, array cache/session, array mail, `sync` queue, and
-`QDRANT_COLLECTION=prime_google_qa_knowledge`. Tests must not require MySQL,
-Qdrant or network access.
-
-Run tests with the pinned PHP 8.3.36 binary; `phpunit.xml` forces SQLite
-`:memory:` even when local environment variables are set:
+`phpunit.xml` isolates tests to SQLite `:memory:`, array cache/session/mail,
+`sync` queue, and `prime_google_qa_knowledge`. Tests must not use MySQL, Qdrant or
+the network; keep outbound HTTP fakes. Run with PHP 8.3.36:
 
 ```
 C:\laragon\bin\php\php-8.3.36-nts-Win32-vs16-x64\php.exe artisan test
 ```
 
-or:
+In `main`, AI retrieval uses the temporary Qdrant vector store. Gemini File
+Search replacement work exists only as a local candidate and is not merged into
+`main`; separate verification and Owner approval are required before activation.
 
-```
-C:\laragon\bin\php\php-8.3.36-nts-Win32-vs16-x64\php.exe vendor\bin\phpunit
-```
-
-The tests use SQLite `:memory:` and must not require MySQL, Qdrant or network
-access. Keep outbound HTTP fakes in place.
-
-## AI subsystem status
-
-The AI assistant, provider settings, knowledge-document ingestion and retrieval
-services are inherited from PRIME. Retrieval uses a vector-store abstraction;
-Qdrant is its only currently bound implementation.
-
-Qdrant is temporary legacy code, not a supported setup dependency. Do not enable
-or connect to it during ordinary setup or baseline verification, and never let
-it access original PRIME data or collections. Collection configuration has no
-shared default; an empty value is rejected when the vector-store configuration
-is resolved. The environment templates name isolated PRIME Google collections.
-
-Gemini File Search is the planned replacement, not an implemented capability.
-`GEMINI_API_KEY` in the environment templates is an empty placeholder; no Gemini
-File Search integration exists yet.
+The frontend migration to Laravel + Inertia/Vue with NovaSpark is incremental;
+Blade and Vue business pages coexist. Historical QA results are checkpoint-bound,
+not current or production-readiness claims.
 
 ## Seeder safety
 
@@ -155,21 +124,14 @@ Do not run seeders against any database outside the approved identities.
 
 ## Safe command boundaries
 
-- Use PHP 8.3.36 explicitly; do not rely on the ambient PHP version on `PATH`.
-- The only approved MySQL databases are `db_preventive_maintenance_ai` for
-  development and `db_preventive_maintenance_ai_test` for explicit QA work.
-  Never target the protected original databases.
+- Use PHP 8.3.36 explicitly; do not rely on the ambient `PATH` version.
 - Do not connect to Qdrant or run indexing as part of setup or tests.
+- PHPUnit stays on SQLite `:memory:`; never repoint tests to MySQL.
 - Do not run `composer update` or `npm update` for baseline setup; use the
   committed lockfiles with `composer install` and `npm ci`.
-- PHPUnit is isolated to SQLite `:memory:`. Do not repoint tests to MySQL.
-- The QA MySQL database is only for explicit QA commands that validate their
-  database target; it is not the PHPUnit database.
 
 ## Known gaps
 
 - `public/favicon.ico` is a zero-byte placeholder and is excluded from the Git
   baseline; it is not referenced by the application.
-- Gemini File Search integration, its documentation and its tests do not exist
-  yet.
 

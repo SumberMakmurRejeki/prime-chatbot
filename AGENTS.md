@@ -196,8 +196,14 @@ managed block.
 - Development workflow: Plan -> Manager Review -> Task -> Independent
   Verification -> Owner Approval -> Commit. Proportional workflow applies:
   small, clearly scoped fixes MAY skip the formal Plan phase.
-- Project-specific sources: `README.md`, `Docs/PROJECT_STATE.md`,
-  `specs/product/SCOPE_LATEST.yaml`.
+- Project-specific sources: `README.md`,
+  [Task Index](Docs/prime-task-hub/PRIME_TASK_INDEX.md),
+  [Active Work](Docs/prime-task-hub/PRIME_ACTIVE_WORK.md),
+  [Project State](Docs/prime-task-hub/PROJECT_STATE.md),
+  [historical archive](Docs/prime-task-hub/archive/PROJECT_STATE.md),
+  `specs/product/SCOPE_LATEST.yaml`. The Task Hub is the active documentation
+  source. The former root `Docs/PROJECT_STATE.md` is retained temporarily as a
+  historical reference; its deletion has not been accepted by QA.
 - Distinguish implemented features from future Gemini File Search plans; do not
   report planned capabilities as done.
 - Do not assume the legacy Qdrant code represents the intended final AI backend.
@@ -205,8 +211,11 @@ managed block.
   `app/Providers/TestingDatabaseServiceProvider.php`).
 - Global engineering standards remain external; do not copy them into this
   repository.
-- Project rules under `.ai/rules` are read only when the referenced paths
-  actually exist; none exist today, so do not create them unless asked.
+- Project rules under `.ai/rules` are read when the referenced paths actually
+  exist. Canonical rule: `.ai/rules/code-commenting.md` — Code Commenting &
+  Human Readability Standard; read it before writing or reviewing code comments
+  in PHP, Vue, JavaScript, or TypeScript. Do not create other `.ai/rules` files
+  unless asked.
 - LOCAL ENVIRONMENT: PRIME Google runs on Windows with Laragon, not Laravel
   Herd. Do not assume Herd services, the Herd CLI, or automatic `*.test`
   domains; use the actual project environment and verified local URL
@@ -222,3 +231,44 @@ managed block.
   skill is not available, do not claim it has been activated; use existing
   project conventions and version-specific documentation instead. Do not
   install a replacement skill or create a new one without an explicit task.
+
+## PRIME Engineering Quality Principles — Mandatory
+
+1. **SCALABLE** — Architecture follows growth in machines, PM schedules,
+   breakdown data, history and users. Remove predictable bottlenecks on evidence,
+   not prediction.
+2. **MODULAR** — Keep UI, controllers, business logic and data access separate.
+   Reuse existing components and services before adding coupling.
+3. **MAINTAINABLE** — Follow Laravel/Vue conventions, use clear names, and keep
+   regression coverage proportional so code stays easy to read, change and ship.
+4. **NO OVERENGINEERING** — KISS and YAGNI. No abstraction, internal framework,
+   service, interface, dependency or configuration without a current need.
+5. **NO UNDERENGINEERING** — Simplicity must not remove validation,
+   authorization, transactions, data integrity, concurrency safety, error
+   handling or required tests.
+6. **MODERN USER-FRIENDLY UI/UX** — Vue/Inertia is the target frontend with
+   NovaSpark as the design system: consistent, responsive, accessible UI with
+   clear loading, error and empty states. Migrate Blade incrementally; no
+   arbitrary rewrites.
+
+7. **ROLE-BASED USABILITY** — PRIME has two business roles: **Admin** (master
+   data, checksheets, settings, permitted AI features; not PM Executor) and
+   **Operator** (PM Executor and Input Breakdown; not Admin/AI menus).
+   Permissions are enforced server-side, not only by hiding UI. `manage_ai`
+   stays a separate permission and no new business roles are added.
+8. **SECURE, RELIABLE & HEALTHY** — Least privilege, input validation, server
+   authorization, credential safety, database guards, transaction integrity, safe
+   failure, proportional logging and risk-based rollback/recovery.
+
+### Decision rules
+
+- Reuse before build; one source of truth.
+- Preserve backward compatibility where relevant.
+- No speculative refactoring.
+- Test proportionally to risk.
+- Make no unsupported security or scalability claims.
+- No large audit for every small change; review findings must be actionable.
+
+**Mandatory review:** Manager, Fullstack and QA apply the relevant principles to
+every assignment. Numeric scoring is not required per task; use it for
+architecture reviews or when the Owner asks.
