@@ -17,20 +17,24 @@ its databases are separate and must not be modified from here.
 | Repository | `SumberMakmurRejeki/prime-chatbot` (GitHub remote `origin`) |
 
 Branch and release status change over time; consult Git for the current state.
-The hub [Project State](Docs/prime-task-hub/PROJECT_STATE.md) distinguishes
-implemented behavior from local candidates, historical verification, and work
-that is not released or operationally activated.
+The external Task Hub's Project State distinguishes implemented behavior from
+local candidates, historical verification, and work that is not released or
+operationally activated.
 
 ## Current task state
 
-Current task status and ownership live in the [PRIME Task Hub](Docs/prime-task-hub/PRIME_TASK_INDEX.md):
+Current task status and ownership live in the external PRIME Task Hub at
+`C:\laragon\www\prime-management\prime-task-hub`. This path is specific to the
+PRIME Windows environment.
 
-- [Task Index](Docs/prime-task-hub/PRIME_TASK_INDEX.md) — parent tasks and children.
-- [Active Work](Docs/prime-task-hub/PRIME_ACTIVE_WORK.md) — current owners and handoffs.
-- [Project State](Docs/prime-task-hub/PROJECT_STATE.md) — code, PR, and release baseline.
+- `PRIME_TASK_INDEX.md` — parent tasks and children.
+- `PRIME_ACTIVE_WORK.md` — current owners and handoffs.
+- `PROJECT_STATE.md` — code, PR, and release baseline.
 
 Historical source documents are preserved under the hub's `archive/`; archived
 plans and QA results describe their original checkpoints, not current status.
+If the external folder is unavailable, report **Task Hub unavailable**; do not
+fall back to a repository snapshot.
 
 ## Current capabilities
 

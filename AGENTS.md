@@ -196,14 +196,15 @@ managed block.
 - Development workflow: Plan -> Manager Review -> Task -> Independent
   Verification -> Owner Approval -> Commit. Proportional workflow applies:
   small, clearly scoped fixes MAY skip the formal Plan phase.
-- Project-specific sources: `README.md`,
-  [Task Index](Docs/prime-task-hub/PRIME_TASK_INDEX.md),
-  [Active Work](Docs/prime-task-hub/PRIME_ACTIVE_WORK.md),
-  [Project State](Docs/prime-task-hub/PROJECT_STATE.md),
-  [historical archive](Docs/prime-task-hub/archive/PROJECT_STATE.md),
-  `specs/product/SCOPE_LATEST.yaml`. The Task Hub is the active documentation
-  source. The former root `Docs/PROJECT_STATE.md` is retained temporarily as a
-  historical reference; its deletion has not been accepted by QA.
+- Project-specific sources: `README.md`, the external PRIME Task Hub at
+  `C:\laragon\www\prime-management\prime-task-hub`, and
+  `specs/product/SCOPE_LATEST.yaml`. The hub path is specific to the PRIME
+  Windows environment. Use its `PRIME_TASK_INDEX.md`, `PRIME_ACTIVE_WORK.md`,
+  `PROJECT_STATE.md`, and historical `archive/`; Manager is the sole writer of
+  TASK status. If the external folder is unavailable, report **Task Hub
+  unavailable**; do not fall back to a repository snapshot. The former root
+  `Docs/PROJECT_STATE.md` is retained temporarily as a historical reference;
+  its deletion has not been accepted by QA.
 - Distinguish implemented features from future Gemini File Search plans; do not
   report planned capabilities as done.
 - Do not assume the legacy Qdrant code represents the intended final AI backend.
