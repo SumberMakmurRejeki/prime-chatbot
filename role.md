@@ -19,11 +19,13 @@
   architecture needs a plan and explicit contract.
 - Use one writer per file. Serialize unavoidable overlap and protect existing
   local changes.
-- Route project work through the [Task Index](Docs/prime-task-hub/PRIME_TASK_INDEX.md),
-  [Active Work](Docs/prime-task-hub/PRIME_ACTIVE_WORK.md), and
-  [Project State](Docs/prime-task-hub/PROJECT_STATE.md). Use the relevant TASK
-  files and source rules for the assignment; historical source documents are
-  preserved in the [archive](Docs/prime-task-hub/archive/README.md).
+- Route project work through the external PRIME Task Hub at
+  `C:\laragon\www\prime-management\prime-task-hub` (the PRIME Windows
+  environment): `PRIME_TASK_INDEX.md`, `PRIME_ACTIVE_WORK.md`, and
+  `PROJECT_STATE.md`. Use the relevant TASK files and preserve historical
+  sources in its `archive/`. Manager is the sole TASK status writer; workers
+  report evidence to Manager. If the external folder is unavailable, report
+  **Task Hub unavailable**; do not fall back to a repository snapshot.
 - Follow project-specific rules in `AGENTS.md` and applicable `.ai/rules`;
   activate an installed, verified domain skill where required. Do not claim an
   unavailable skill was used or install/create one without approval.
