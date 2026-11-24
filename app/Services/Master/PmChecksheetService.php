@@ -59,9 +59,13 @@ class PmChecksheetService
         });
     }
 
-    public function update(Request $request, PmChecksheet $checksheet, array $payload): PmChecksheet
-    {
-        return DB::transaction(function () use ($request, $checksheet, $payload): PmChecksheet {
+    public function update(
+        Request $request,
+        PmChecksheet $checksheet,
+        array $payload,
+        array $scheduleAlreadyAppliedMachineIds = [],
+    ): PmChecksheet {
+        return DB::transaction(function () use ($request, $checksheet, $payload, $scheduleAlreadyAppliedMachineIds): PmChecksheet {
             $checksheet = PmChecksheet::query()->whereKey($checksheet->id)->lockForUpdate()->firstOrFail();
             $oldValues = $checksheet->only(['checksheet_code', 'checksheet_name', 'description', 'is_active']);
 
@@ -72,7 +76,7 @@ class PmChecksheetService
                 'is_active' => array_key_exists('is_active', $payload) ? (bool) $payload['is_active'] : (bool) $checksheet->is_active,
             ])->save();
 
-            $this->syncWizardData($checksheet, $payload, $request);
+            $this->syncWizardData($checksheet, $payload, $request, $scheduleAlreadyAppliedMachineIds);
 
             $this->activityLog->log(
                 request: $request,
@@ -376,8 +380,12 @@ class PmChecksheetService
         ];
     }
 
-    protected function syncWizardData(PmChecksheet $checksheet, array $payload, Request $request): void
-    {
+    protected function syncWizardData(
+        PmChecksheet $checksheet,
+        array $payload,
+        Request $request,
+        array $scheduleAlreadyAppliedMachineIds = [],
+    ): void {
         // Kunci Checksheet terlebih dahulu untuk menjaga urutan lock konsisten
         // (Checksheet → Machine ascending) dan mencegah deadlock.
         // Gunakan instance terkunci sebagai sumber kebenaran untuk marker decision.
@@ -402,7 +410,7 @@ class PmChecksheetService
 
         $dormantAssignments = [];
         foreach ($selectedMachineIds as $machineId) {
-            $assignment = PmChecksheetMachine::query()->updateOrCreate(
+            $assignment = PmChecksheetMachine::query()->firstOrCreate(
                 [
                     'pm_checksheet_id' => $checksheet->id,
                     'machine_id' => $machineId,
@@ -569,6 +577,9 @@ class PmChecksheetService
                 }
             }
 
+            if (in_array($machineId, $scheduleAlreadyAppliedMachineIds, true)) {
+                continue;
+            }
             // Era current selalu dipilih dari state non-terminal; first() lintas
             // histori dilarang karena ENDED tidak pernah boleh menjadi konfigurasi live.
             $currentSchedules = PmSchedule::query()

@@ -171,3 +171,61 @@ export interface SpaProofProps {
     clientVisitUrl: string;
     serverVisitUrl: string;
 }
+
+/** Kontrak props halaman kandidat create/edit Master Checksheet; server tetap otoritas. */
+export interface ChecksheetCandidateMachine {
+    id: number;
+    code: string;
+    name: string;
+    location: string | null;
+}
+
+export interface ChecksheetCandidateAction {
+    id: number;
+    action_label: string;
+    is_active: boolean;
+}
+
+export interface ChecksheetCandidate {
+    id: number | null;
+    checksheet_code: string;
+    checksheet_name: string;
+    description: string;
+    is_active: boolean;
+}
+
+/** Payload wizard sesuai FormRequest; urutan kunci tidak penting untuk validasi. */
+export interface WizardPayload {
+    selected_machine_ids: number[];
+    parts: Record<string, { id: string; name: string; description?: string }[]>;
+    standards: Record<string, unknown[]>;
+    schedule: {
+        frequency_type: string;
+        weekly_days: number[];
+        monthly_day: number | null;
+        operational_from: string;
+        start_date?: string | null;
+        generate_until?: string | null;
+    };
+}
+
+export interface ChecksheetCandidateProps extends PageProps {
+    scheduleDatesUrl: string;
+    auth: AuthProps;
+    manageAi: boolean;
+    isEdit: boolean;
+    checksheet: ChecksheetCandidate;
+    machines: ChecksheetCandidateMachine[];
+    actions: ChecksheetCandidateAction[];
+    payload: WizardPayload | null;
+    originalMachineIds: number[];
+    originalSchedule: WizardPayload['schedule'] | null;
+    storeUrl: string;
+    submitUrl: string;
+    showUrl: string | null;
+    previewUrl: string | null;
+    applyUrl: string | null;
+    indexUrl: string;
+    actionStoreUrl: string;
+    notificationEndpoints: NotificationEndpoints;
+}

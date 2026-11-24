@@ -13,6 +13,7 @@ use App\Services\PM\PmScheduleDateGenerator;
 use App\Services\PM\PmScheduleDateReconciler;
 use App\Services\PM\StalePreviewException;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -39,8 +40,9 @@ class PmScheduleUpdateService
      * @param  array<string, mixed>  $schedulePayload  Payload schedule dari wizard.
      * @return array{status: string, impact: array<string, list<string>>, counts: array<string, int>, unresolved: bool, has_conflicts: bool, has_changes: bool, token: string, dormant_assignments: list<array<string, mixed>>, business_today: string}
      */
-    public function preview(PmChecksheet $checksheet, array $schedulePayload): array
+    public function preview(PmChecksheet $checksheet, array $schedulePayload, ?array $candidateMachineIds = null): array
     {
+        $candidateMachineIds = $this->normalizeCandidateMachineIds($candidateMachineIds);
         // Hitung tanggal bisnis hari ini (Asia/Jakarta).
         $businessToday = BusinessDate::today();
 
@@ -111,6 +113,13 @@ class PmScheduleUpdateService
             ])
             ->orderBy('machine_id')
             ->get();
+        $candidateMachines = $candidateMachineIds === null
+            ? collect()
+            : Machine::query()
+                ->whereIn('id', $candidateMachineIds)
+                ->orderBy('id')
+                ->get()
+                ->keyBy('id');
 
         // Klasifikasi setiap baris tanggal yang ada di database (current era saja).
         $created = [];
@@ -219,6 +228,50 @@ class PmScheduleUpdateService
             }
         }
 
+        $candidateAssignments = [];
+        if ($candidateMachineIds !== null) {
+            $assignedMachineIds = $assignments->pluck('machine_id')
+                ->map(fn ($machineId): int => (int) $machineId)
+                ->all();
+
+            foreach (array_diff($candidateMachineIds, $assignedMachineIds) as $machineId) {
+                $machine = $candidateMachines->get($machineId);
+                if ($machine === null
+                    || ! $machine->is_active
+                    || ! $this->lifecyclePolicy->isLive('machine', (string) $machine->lifecycle_status)
+                ) {
+                    throw ValidationException::withMessages([
+                        'wizard_payload.selected_machine_ids' => 'Mesin baru harus aktif untuk menerapkan jadwal.',
+                    ]);
+                }
+
+                $candidateAssignments[] = [
+                    'machine_id' => (int) $machine->id,
+                    'machine_code' => $machine->machine_code,
+                    'machine_name' => $machine->machine_name,
+                ];
+
+                $floor = $this->lifecyclePolicy->materializationFloor(
+                    $payloadOperationalFrom,
+                    $payloadStartDate,
+                    $machine->effective_live_from,
+                    null,
+                    $businessToday,
+                );
+                if ($floor !== null) {
+                    $created = [
+                        ...$created,
+                        ...PmScheduleDateGenerator::generate([
+                            'frequency_type' => $schedulePayload['frequency_type'],
+                            'weekly_days' => $schedulePayload['weekly_days'] ?? [],
+                            'monthly_day' => $schedulePayload['monthly_day'] ?? null,
+                            'start_date' => $floor->toDateString(),
+                            'generate_until' => $window['generate_until'],
+                        ]),
+                    ];
+                }
+            }
+        }
         sort($created);
         sort($removed);
         sort($retained);
@@ -226,7 +279,7 @@ class PmScheduleUpdateService
         sort($conflict);
 
         $hasConflicts = count($conflict) > 0;
-        $hasChanges = count($created) + count($removed) > 0;
+        $hasChanges = count($created) + count($removed) > 0 || $candidateAssignments !== [];
 
         // Tentukan status: conflict > normal > zero.
         if ($hasConflicts) {
@@ -237,7 +290,7 @@ class PmScheduleUpdateService
             $status = 'zero';
         }
 
-        return [
+        $result = [
             'status' => $status,
             'impact' => [
                 'created' => $created,
@@ -256,10 +309,15 @@ class PmScheduleUpdateService
             'unresolved' => $hasConflicts,
             'has_conflicts' => $hasConflicts,
             'has_changes' => $hasChanges,
-            'token' => $this->fingerprint($checksheet, $businessToday, $schedulePayload),
+            'token' => $this->fingerprint($checksheet, $businessToday, $schedulePayload, $candidateMachineIds, $candidateMachines),
             'dormant_assignments' => $dormantAssignments,
             'business_today' => $businessToday->toDateString(),
         ];
+        if ($candidateMachineIds !== null) {
+            $result['candidate_assignments'] = $candidateAssignments;
+        }
+
+        return $result;
     }
 
     /**
@@ -269,13 +327,36 @@ class PmScheduleUpdateService
         PmChecksheet $checksheet,
         Carbon $businessToday,
         array $schedulePayload = [],
+        ?array $candidateMachineIds = null,
+        ?Collection $machineSnapshots = null,
     ): string {
+        $candidateMachineIds = $this->normalizeCandidateMachineIds($candidateMachineIds);
         $data = [
             'business_today' => $businessToday->toDateString(),
             'checksheet_id' => $checksheet->id,
             'schedule_payload' => $schedulePayload,
             'machines' => [],
         ];
+        if ($candidateMachineIds !== null) {
+            $candidateMachines = $machineSnapshots ?? Machine::query()
+                ->whereIn('id', $candidateMachineIds)
+                ->orderBy('id')
+                ->get()
+                ->keyBy('id');
+            $data['candidate_machine_ids'] = $candidateMachineIds;
+            $data['candidate_machines'] = [];
+
+            foreach ($candidateMachineIds as $machineId) {
+                $machine = $candidateMachines->get($machineId);
+                $data['candidate_machines'][] = [
+                    'machine_id' => $machineId,
+                    'exists' => $machine !== null,
+                    'is_active' => $machine?->is_active,
+                    'lifecycle_status' => $machine?->lifecycle_status,
+                    'effective_live_from' => $machine?->effective_live_from?->toDateString(),
+                ];
+            }
+        }
 
         $assignments = PmChecksheetMachine::query()
             ->where('pm_checksheet_id', $checksheet->id)
@@ -297,7 +378,7 @@ class PmScheduleUpdateService
             ->get();
 
         foreach ($assignments as $assignment) {
-            $machine = $assignment->machine;
+            $machine = $machineSnapshots?->get((int) $assignment->machine_id) ?? $assignment->machine;
             $machineData = [
                 'machine_id' => $assignment->machine_id,
                 'lifecycle_status' => $machine?->lifecycle_status,
@@ -357,6 +438,25 @@ class PmScheduleUpdateService
     }
 
     /**
+     * @param  array<int, int|string>|null  $machineIds
+     * @return list<int>|null
+     */
+    private function normalizeCandidateMachineIds(?array $machineIds): ?array
+    {
+        if ($machineIds === null) {
+            return null;
+        }
+
+        $normalizedIds = array_values(array_unique(array_map(
+            static fn (int|string $machineId): int => (int) $machineId,
+            $machineIds,
+        )));
+        sort($normalizedIds, SORT_NUMERIC);
+
+        return $normalizedIds;
+    }
+
+    /**
      * Pastikan paling banyak satu era current per assignment pada checksheet.
      *
      * Dua era non-terminal untuk assignment yang sama melanggar invariant
@@ -400,8 +500,13 @@ class PmScheduleUpdateService
      *
      * @throws StalePreviewException Jika fingerprint tidak cocok (state berubah).
      */
-    public function apply(PmChecksheet $checksheet, array $schedulePayload, string $token): array
-    {
+    public function apply(
+        PmChecksheet $checksheet,
+        array $schedulePayload,
+        string $token,
+        ?array $candidateMachineIds = null,
+    ): array {
+        $candidateMachineIds = $this->normalizeCandidateMachineIds($candidateMachineIds);
         // Tolak apply unresolved sebelum lock, token, transaksi, atau mutasi apa pun.
         if (empty($schedulePayload['operational_from'] ?? null)) {
             return [
@@ -410,7 +515,7 @@ class PmScheduleUpdateService
             ];
         }
 
-        return DB::transaction(function () use ($checksheet, $schedulePayload, $token): array {
+        return DB::transaction(function () use ($checksheet, $schedulePayload, $token, $candidateMachineIds): array {
             // Tangkap tanggal bisnis di dalam transaksi agar konsisten dengan lock.
             $businessToday = BusinessDate::today();
             // Lock baris checksheet untuk mencegah perubahan konkuren.
@@ -418,27 +523,27 @@ class PmScheduleUpdateService
                 ->lockForUpdate()
                 ->findOrFail($checksheet->id);
 
-            // TASK-003 Slice 3: Ambil SEMUA ID mesin yang ter-assign ke checksheet ini.
-            // Berbeda dengan reconcileScheduleDates() yang hanya perlu mesin berj
-            // adwal aktif, apply() memanggil persistScheduleConfig() yang dapat
-            // membuat/mengaktifkan jadwal untuk assignment tanpa jadwal aktif.
-            // Semua mesin tersebut harus dikunci sebelum mutation untuk menjaga
-            // causal lock boundary terhadap MachineService::delete().
-            $machineIds = PmChecksheetMachine::query()
+            // TASK-003 Slice 3: lock every persisted assignment Machine plus any
+            // newly selected candidate Machine before locking schedules.
+            $existingMachineIds = PmChecksheetMachine::query()
                 ->where('pm_checksheet_id', $lockedChecksheet->id)
                 ->orderBy('machine_id', 'asc')
                 ->pluck('machine_id')
-                ->unique()
-                ->values()
+                ->map(fn ($machineId): int => (int) $machineId)
                 ->all();
-
-            // TASK-003 Slice 3: Kunci mesin berurutan ascending SEBELUM jadwal
-            if (! empty($machineIds)) {
-                Machine::query()
+            $machineIds = array_values(array_unique([
+                ...$existingMachineIds,
+                ...($candidateMachineIds ?? []),
+            ]));
+            sort($machineIds, SORT_NUMERIC);
+            $machineSnapshots = collect();
+            if ($machineIds !== []) {
+                $machineSnapshots = Machine::query()
                     ->whereIn('id', $machineIds)
                     ->orderBy('id', 'asc')
                     ->lockForUpdate()
-                    ->get();
+                    ->get()
+                    ->keyBy('id');
             }
 
             // TASK-006 Slice C: lock hanya era current (active/paused); era ENDED
@@ -461,8 +566,13 @@ class PmScheduleUpdateService
                 ];
             }
 
-            // Hitung ulang fingerprint dari state yang sudah di-lock.
-            $currentFingerprint = $this->fingerprint($lockedChecksheet, $businessToday, $schedulePayload);
+            $currentFingerprint = $this->fingerprint(
+                $lockedChecksheet,
+                $businessToday,
+                $schedulePayload,
+                $candidateMachineIds,
+                $machineSnapshots,
+            );
 
             // Verifikasi token cocok. Jika tidak, state berubah antara preview
             // dan apply -> lempar StalePreviewException.
@@ -515,7 +625,13 @@ class PmScheduleUpdateService
             }
 
             // Hitung ulang fingerprint baru setelah mutasi.
-            $freshToken = $this->fingerprint($lockedChecksheet->fresh(), $businessToday, $schedulePayload);
+            $freshToken = $this->fingerprint(
+                $lockedChecksheet->fresh(),
+                $businessToday,
+                $schedulePayload,
+                $candidateMachineIds,
+                $machineSnapshots,
+            );
 
             return [
                 'status' => 'applied',
@@ -578,7 +694,7 @@ class PmScheduleUpdateService
         $dormantAssignments = [];
 
         foreach ($selectedMachineIds as $machineId) {
-            $assignment = PmChecksheetMachine::query()->updateOrCreate(
+            $assignment = PmChecksheetMachine::query()->firstOrCreate(
                 [
                     'pm_checksheet_id' => $checksheet->id,
                     'machine_id' => $machineId,
