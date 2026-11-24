@@ -19,6 +19,7 @@ use App\Http\Controllers\Master\MasterLokasiController;
 use App\Http\Controllers\Master\MasterMesinController;
 use App\Http\Controllers\Master\MasterPmActionController;
 use App\Http\Controllers\Master\MasterPmChecksheetController;
+use App\Http\Controllers\Master\MasterPmChecksheetVueCandidateController;
 use App\Http\Controllers\Notification\AdminNotificationController;
 use App\Http\Controllers\PM\MachineLandingController;
 use App\Http\Controllers\PM\PmExecutorController;
@@ -132,6 +133,27 @@ Route::middleware(['prime.auth', 'prime.operator.session'])->group(function (): 
         Route::get('/', [MasterPmChecksheetController::class, 'index'])->name('master-checksheet.index');
         Route::get('/create', [MasterPmChecksheetController::class, 'create'])->name('master-checksheet.create');
         Route::post('/', [MasterPmChecksheetController::class, 'store'])->name('master-checksheet.store');
+        Route::middleware(HandleInertiaRequests::class)->group(function (): void {
+            Route::get('/vue-candidate/create', [MasterPmChecksheetVueCandidateController::class, 'createCandidate'])
+                ->name('master-checksheet.vue-candidate.create');
+            Route::get('/vue-candidate/{id}/edit', [MasterPmChecksheetVueCandidateController::class, 'editCandidate'])
+                ->whereNumber('id')
+                ->name('master-checksheet.vue-candidate.edit');
+        });
+        Route::middleware(HandleInertiaRequests::class)
+            ->post('/vue-candidate/store', [MasterPmChecksheetVueCandidateController::class, 'storeCandidate'])
+            ->name('master-checksheet.vue-candidate.store');
+        Route::middleware(HandleInertiaRequests::class)
+            ->put('/vue-candidate/{id}/store', [MasterPmChecksheetVueCandidateController::class, 'updateCandidate'])
+            ->name('master-checksheet.vue-candidate.update');
+        Route::post('/vue-candidate/preview-schedule-dates', [MasterPmChecksheetVueCandidateController::class, 'previewCandidateScheduleDates'])
+            ->name('master-checksheet.vue-candidate.preview-schedule-dates');
+        Route::post('/vue-candidate/{id}/preview-schedule-update', [MasterPmChecksheetVueCandidateController::class, 'previewCandidateScheduleUpdate'])
+            ->whereNumber('id')
+            ->name('master-checksheet.vue-candidate.preview-schedule-update');
+        Route::post('/vue-candidate/{id}/apply-schedule-update', [MasterPmChecksheetVueCandidateController::class, 'applyCandidateScheduleUpdate'])
+            ->whereNumber('id')
+            ->name('master-checksheet.vue-candidate.apply-schedule-update');
         // Master Action harus terdaftar sebelum route dinamis '/{id}' agar
         // '/actions' tidak pernah ditafsirkan sebagai checksheet id.
         // Halaman Master Action kini dirender Inertia/Vue; middleware hanya dipasang
