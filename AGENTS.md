@@ -191,20 +191,29 @@ managed block.
 - Workspace boundary: `C:\laragon\www\prime-google`. This is an independent Git
   repository; the original PRIME working copy and its databases MUST NOT be
   modified from here.
-- Owner approval is REQUIRED before Git commits, pushes, destructive actions, or
-  runtime database mutations.
-- Development workflow: Plan -> Manager Review -> Task -> Independent
-  Verification -> Owner Approval -> Commit. Proportional workflow applies:
-  small, clearly scoped fixes MAY skip the formal Plan phase.
-- Project-specific sources: `README.md`, the external PRIME Task Hub at
-  `C:\laragon\www\prime-management\prime-task-hub`, and
-  `specs/product/SCOPE_LATEST.yaml`. The hub path is specific to the PRIME
-  Windows environment. Use its `PRIME_TASK_INDEX.md`, `PRIME_ACTIVE_WORK.md`,
-  `PROJECT_STATE.md`, and historical `archive/`; Manager is the sole writer of
-  TASK status. If the external folder is unavailable, report **Task Hub
-  unavailable**; do not fall back to a repository snapshot. The former root
-  `Docs/PROJECT_STATE.md` is retained temporarily as a historical reference;
-  its deletion has not been accepted by QA.
+- Owner approval is REQUIRED before Git commits, pushes, PR creation, merges, destructive actions, production cutover, or runtime database mutations.
+- Execution model: one Oh My Pi (OMP) agent, sequential execution, one scoped assignment at a time. Do not create subagents unless explicitly requested.
+- Development workflow: PLAN → IMPLEMENT → VERIFY → REVIEW → CLEAN → DONE.
+- Correction workflow: FAIL → FIX → VERIFY → REVIEW.
+- Environment blocker workflow: ENVIRONMENT BLOCKED → UNBLOCK ENVIRONMENT → VERIFY.
+- Apply proportional planning and verification. Small, clearly scoped fixes may skip formal planning.
+- After two unsuccessful targeted correction attempts, stop, preserve the checkpoint, and report the blocker.
+- Do not let a blocked task prevent independent ready work.
+- Use Git CLI, GitHub CLI, or GitHub MCP as appropriate.
+- For coding assignments, activate `clean-code` and `ponytail`. Activate other skills only when relevant.
+- Project-specific sources:
+  - Repository: `C:\laragon\www\prime-google`
+  - Project overview: `C:\laragon\www\prime-google\README.md`
+  - Active Task Hub: `C:\laragon\www\prime-management\prime-task-hub`
+  - Task router: `C:\laragon\www\prime-management\prime-task-hub\PRIME_TASK_INDEX.md`
+  - Active assignment: `C:\laragon\www\prime-management\prime-task-hub\PRIME_ACTIVE_WORK.md`
+  - Technical state: `C:\laragon\www\prime-management\prime-task-hub\PROJECT_STATE.md`
+  - Delivery documents: `C:\laragon\www\prime-management\prime-task-hub\delivery`
+  - Product scope: `C:\laragon\www\prime-google\specs\product\SCOPE_LATEST.yaml`
+- The ten delivery documents are the canonical source of task scope, business requirements, acceptance criteria, and detailed task status.
+- PRIME_TASK_INDEX.md is a lightweight routing and status summary, not a replacement for detailed acceptance criteria.
+- Update task status only within an explicitly authorized documentation scope and based on verified evidence.
+- If the external Task Hub is unavailable, report **Task Hub unavailable**. Do not use obsolete repository snapshots as the active source of truth.
 - Distinguish implemented features from future Gemini File Search plans; do not
   report planned capabilities as done.
 - Do not assume the legacy Qdrant code represents the intended final AI backend.
@@ -212,11 +221,13 @@ managed block.
   `app/Providers/TestingDatabaseServiceProvider.php`).
 - Global engineering standards remain external; do not copy them into this
   repository.
-- Project rules under `.ai/rules` are read when the referenced paths actually
-  exist. Canonical rule: `.ai/rules/code-commenting.md` — Code Commenting &
-  Human Readability Standard; read it before writing or reviewing code comments
-  in PHP, Vue, JavaScript, or TypeScript. Do not create other `.ai/rules` files
-  unless asked.
+- Code Commenting & Human Readability Standard:
+  `C:\laragon\www\prime-google\.ai\rules\code-commenting.md`
+- Code comments and documentation descriptions must use clear Indonesian. Identifiers remain in English.
+- Read the commenting standard before coding or reviewing relevant code comments, subject to Laravel Boost's mandatory project-rule loading requirements.
+- Apply the standard incrementally to new and modified code. Do not perform repository-wide commenting.
+- Prefer PHPDoc for nontrivial PHP contracts and inline comments only where complex logic requires additional explanation.
+- Do not create additional rule files without explicit Owner authorization.
 - LOCAL ENVIRONMENT: PRIME Google runs on Windows with Laragon, not Laravel
   Herd. Do not assume Herd services, the Herd CLI, or automatic `*.test`
   domains; use the actual project environment and verified local URL
@@ -233,6 +244,70 @@ managed block.
   project conventions and version-specific documentation instead. Do not
   install a replacement skill or create a new one without an explicit task.
 
+
+
+## PRIME Context Loading & Token Efficiency
+
+Use progressive context loading. Retrieve the smallest sufficient context for the active assignment.
+
+These rules supplement Laravel Boost and MUST NOT bypass its mandatory project-rule or skill-loading requirements.
+
+### Entry point
+
+Use the active assignment and task router:
+
+```
+C:\laragon\www\prime-management\prime-task-hub\PRIME_TASK_INDEX.md
+```
+
+Use the index to locate the relevant delivery document. Do not automatically load all delivery documents.
+
+### Context by assignment
+
+| Assignment     | Required context                                             |
+| -------------- | ------------------------------------------------------------ |
+| RECON          | Active scope and relevant evidence                           |
+| Master Roadmap | Task index, technical state, dependencies, blockers, and relevant delivery sections |
+| Feature PLAN   | Relevant task sections and affected source code              |
+| IMPLEMENT      | Approved plan, task scope, acceptance criteria, and applicable rules |
+| Bug Fix        | Error evidence, affected code, and relevant business rules   |
+| VERIFY         | Acceptance criteria, changed code, and relevant tests        |
+| REVIEW         | Relevant diff, acceptance criteria, and verification evidence |
+| Git            | Approved scope, Git status, diff, and relevant checkpoint    |
+
+### Roadmap planning
+
+- Cover all 22 parent tasks and 6 child tasks.
+- Start with the task index instead of loading every delivery document in full.
+- Retrieve task objectives, status, dependencies, blockers, remaining work, and relevant acceptance criteria.
+- Verify actual repository checkpoints before making implementation decisions.
+- Expand document sections only when additional context is required.
+- Do not load detailed code examples or component documentation unless they affect a roadmap decision.
+- Do not recreate accepted plans or completed implementations without a concrete reason.
+
+### Source code exploration
+
+- Use targeted Grep, Glob, Read, and symbol searches.
+- Use jCodeMunch when available for references, callers, dependencies, and impact analysis.
+- Read the actual source before modifying code.
+- Avoid full repository scans for narrowly scoped assignments.
+- Avoid dumping large files, logs, diffs, or test outputs into context unnecessarily.
+- Retrieve version-specific framework documentation only when needed.
+
+### Context reuse
+
+- Reuse verified information already available in the current session.
+- Revalidate evidence only when the candidate, environment, scope, or relevant state changes.
+- Preserve concise checkpoints for unfinished work.
+- Do not repeatedly load the same documents without a concrete reason.
+- Do not read historical archives unless required evidence is unavailable in active documentation.
+
+### Safety
+
+Token optimization must never omit mandatory project rules, authorization, database guards, acceptance criteria, or verification required by the risk of the change.
+
+Prefer focused evidence over repeated discovery.
+
 ## PRIME Engineering Quality Principles — Mandatory
 
 1. **SCALABLE** — Architecture follows growth in machines, PM schedules,
@@ -247,10 +322,7 @@ managed block.
 5. **NO UNDERENGINEERING** — Simplicity must not remove validation,
    authorization, transactions, data integrity, concurrency safety, error
    handling or required tests.
-6. **MODERN USER-FRIENDLY UI/UX** — Vue/Inertia is the target frontend with
-   NovaSpark as the design system: consistent, responsive, accessible UI with
-   clear loading, error and empty states. Migrate Blade incrementally; no
-   arbitrary rewrites.
+6. **MODERN USER-FRIENDLY UI/UX** — Vue/Inertia with Vuetify is the target frontend stack. Prefer existing Vuetify components over equivalent custom implementations. Maintain a consistent, responsive, accessible UI with clear loading, error, and empty states. Migrate Blade incrementally, preserve business parity, and avoid arbitrary rewrites.
 
 7. **ROLE-BASED USABILITY** — PRIME has two business roles: **Admin** (master
    data, checksheets, settings, permitted AI features; not PM Executor) and
@@ -270,6 +342,27 @@ managed block.
 - Make no unsupported security or scalability claims.
 - No large audit for every small change; review findings must be actionable.
 
-**Mandatory review:** Manager, Fullstack and QA apply the relevant principles to
-every assignment. Numeric scoring is not required per task; use it for
-architecture reviews or when the Owner asks.
+## PRIME Vuetify Frontend Rules
+
+- Vue/Inertia and Vuetify are the approved frontend technology direction.
+- Verify installed Vue, Inertia, Vite, and Vuetify versions before relying on package APIs.
+- Vuetify installation and dependency changes require an approved implementation scope.
+- Prefer native Vuetify components before creating equivalent custom components.
+- Reuse a centralized Vuetify theme and configuration.
+- Preserve existing backend contracts, validation, authorization, routes, and business behavior.
+- Migrate existing Blade and Vue pages incrementally.
+- Retain active Blade pages until their replacements meet acceptance and cutover is approved.
+- Use Vuetify MCP when available and relevant to the current component.
+- Retrieve only the component documentation, props, events, slots, and APIs required by the active assignment.
+- Do not claim Vuetify or its MCP is installed until verified.
+- Do not introduce additional UI libraries without approval.
+
+### Official references
+
+- Documentation: https://vuetifyjs.com/en/
+- Repository: https://github.com/vuetifyjs/vuetify
+- Vuetify MCP: https://github.com/vuetifyjs/mcp
+
+**Mandatory review:** The Engineering Advisor defines technical direction, scope, acceptance criteria, and priorities. OMP implements and verifies the approved assignment. The Owner approves consequential operations and business decisions.
+
+Apply the relevant engineering principles proportionally. Numeric scoring is required only for architecture reviews or when requested by the Owner.
