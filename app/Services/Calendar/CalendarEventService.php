@@ -115,6 +115,7 @@ class CalendarEventService
         ?int $machineId,
     ): array {
         $query = PmScheduleDate::query()
+            ->withoutPauseGap()
             ->with([
                 'machine:id,machine_code,machine_name,location_id',
                 'machine.location:id,location_name',
@@ -151,7 +152,7 @@ class CalendarEventService
 
                 return [
                     'id' => "pm-{$scheduleDate->id}",
-                    'title' => 'PM - ' . ($machine?->machine_name ?? 'Mesin'),
+                    'title' => 'PM - '.($machine?->machine_name ?? 'Mesin'),
                     'start' => $scheduleDate->scheduled_date?->toDateString(),
                     'allDay' => true,
                     'url' => $url,
@@ -212,7 +213,7 @@ class CalendarEventService
 
                 return [
                     'id' => "bd-{$breakdown->id}",
-                    'title' => 'Breakdown - ' . ($machine?->machine_name ?? 'Mesin'),
+                    'title' => 'Breakdown - '.($machine?->machine_name ?? 'Mesin'),
                     'start' => $breakdown->breakdown_at?->toIso8601String(),
                     'end' => $breakdown->closed_at?->toIso8601String(),
                     'url' => $role === 'admin' ? route('breakdown-review.show', $breakdown->id) : null,

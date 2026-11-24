@@ -116,6 +116,7 @@ class DashboardMonitoringService
     protected function pmStatus(Carbon $startDate, Carbon $endDate): array
     {
         $scheduleDates = PmScheduleDate::query()
+            ->withoutPauseGap()
             ->whereBetween('scheduled_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->get(['status']);
 
@@ -176,6 +177,7 @@ class DashboardMonitoringService
     protected function pmRateSeries(Carbon $startDate, Carbon $endDate): Collection
     {
         $scheduleByMonth = PmScheduleDate::query()
+            ->withoutPauseGap()
             ->select(['scheduled_date', 'status'])
             ->whereBetween('scheduled_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->get()

@@ -24,11 +24,8 @@ use Illuminate\Support\Facades\DB;
  * (PmScheduleDate) dan execution canonical tidak pernah ditulis di sini,
  * sehingga pekerjaan yang sudah dimulai dan histori tetap utuh.
  *
- * Actor audit memakai mekanisme autentikasi/audit yang sudah ada
- * (PrimeAuthService di ActivityLogService); tidak ada tabel audit paralel
- * maupun kolom schema baru. Tanpa model event, mutator, trigger, atau efek
- * samping tersembunyi: LifecyclePolicy tetap murni dan hanya menjadi sumber
- * matriks transisi.
+ * Actor dan reason memakai ActivityLogService yang sama; interval pause dan
+ * lifecycle disimpan dalam transaksi audit yang sama.
  */
 class ScheduleLifecycleService
 {
@@ -119,10 +116,28 @@ class ScheduleLifecycleService
                 'lifecycle_status' => $target,
             ];
 
-            if ($from === 'paused' && $target === 'active') {
-                // Resume menetapkan boundary live baru hari ini (Asia/Jakarta);
-                // provenance operational_from/start_date tidak pernah disentuh.
-                $attributes['effective_live_from'] = BusinessDate::today();
+            // Lock Schedule menserialisasi interval juga; jangan menebak provenance legacy.
+            $intervals = $locked->pauseIntervals()->lockForUpdate()->get();
+            $openIntervals = $intervals->whereNull('resumed_on');
+            $today = BusinessDate::today()->toDateString();
+            if ($target === 'paused') {
+                if ($openIntervals->isNotEmpty()
+                    || $intervals->contains(fn ($interval): bool => $interval->resumed_on->toDateString() > $today)) {
+                    throw new InvalidScheduleTransitionException('Interval pause schedule tidak konsisten.');
+                }
+                $locked->pauseIntervals()->create(['paused_on' => $today]);
+            } elseif ($from === 'paused' && $target === 'active') {
+                if ($openIntervals->count() !== 1) {
+                    throw new InvalidScheduleTransitionException('Resume memerlukan provenance interval pause yang terpercaya.');
+                }
+                $open = $openIntervals->first();
+                if ($open->paused_on->toDateString() > $today
+                    || $intervals->contains(fn ($interval): bool => $interval->id !== $open->id
+                        && ($interval->resumed_on === null
+                            || $interval->resumed_on->toDateString() > $open->paused_on->toDateString()))) {
+                    throw new InvalidScheduleTransitionException('Interval pause schedule tidak konsisten.');
+                }
+                $open->update(['resumed_on' => $today]);
             }
 
             $locked->forceFill($attributes)->save();

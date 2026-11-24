@@ -2,6 +2,7 @@
 
 namespace App\Services\Report;
 
+use App\Models\PmScheduleDate;
 use App\Services\PM\BusinessDate;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
@@ -125,6 +126,8 @@ class ReportPmParentQuery
         if (($filters['start_date'] ?? null) || ($filters['end_date'] ?? null)) {
             return;
         }
+
+        PmScheduleDate::constrainPauseGap($query, 'psd');
 
         if ($scope === null) {
             $today = BusinessDate::today();

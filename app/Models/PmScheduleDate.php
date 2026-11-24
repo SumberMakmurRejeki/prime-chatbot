@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 
 class PmScheduleDate extends Model
 {
@@ -58,6 +59,34 @@ class PmScheduleDate extends Model
     public function canonicalExecution(): HasOne
     {
         return $this->hasOne(PmExecution::class)->withTrashed();
+    }
+
+    public function scopeWithoutPauseGap(Builder $query): void
+    {
+        self::constrainPauseGap($query);
+    }
+
+    /**
+     * Gap hanya membebaskan occurrence mutable tanpa execution, bukan histori.
+     */
+    public static function constrainPauseGap(Builder|QueryBuilder $query, string $table = 'pm_schedule_dates'): void
+    {
+        $query->where(function ($eligible) use ($table): void {
+            $eligible->whereNotIn($table.'.status', ['scheduled', 'overdue', 'missed'])
+                ->orWhereExists(function (QueryBuilder $execution) use ($table): void {
+                    $execution->selectRaw('1')->from('pm_executions as pause_execution')
+                        ->whereColumn('pause_execution.pm_schedule_date_id', $table.'.id');
+                })
+                ->orWhereNotExists(function (QueryBuilder $interval) use ($table): void {
+                    $interval->selectRaw('1')->from('pm_schedule_pause_intervals as pause_interval')
+                        ->whereColumn('pause_interval.pm_schedule_id', $table.'.pm_schedule_id')
+                        ->whereRaw('DATE(pause_interval.paused_on) <= DATE('.$table.'.scheduled_date)')
+                        ->where(function (QueryBuilder $end) use ($table): void {
+                            $end->whereNull('pause_interval.resumed_on')
+                                ->orWhereRaw('DATE(pause_interval.resumed_on) > DATE('.$table.'.scheduled_date)');
+                        });
+                });
+        });
     }
 
     public function scopeByStatus(Builder $query, string $status): void
