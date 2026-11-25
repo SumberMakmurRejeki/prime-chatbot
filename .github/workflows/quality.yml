@@ -54,6 +54,9 @@ jobs:
       - name: Install locked npm dependencies
         run: npm ci
 
+      - name: Check frontend types
+        run: npm run typecheck
+
       - name: Build frontend
         run: npm run build
 

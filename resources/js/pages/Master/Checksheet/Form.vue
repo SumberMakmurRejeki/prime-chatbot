@@ -32,7 +32,7 @@ const form = useForm({
     is_active: props.value.checksheet.is_active ? '1' : '0',
     wizard_payload: '',
 });
-watch(() => form.errors.selected_machine_ids, (error) => {
+watch(() => 'selected_machine_ids' in form.errors ? form.errors.selected_machine_ids : undefined, (error) => {
     if (error) setStep(2);
 });
 const payload = ref<WizardPayload>(normalizePayload(props.value.payload));
