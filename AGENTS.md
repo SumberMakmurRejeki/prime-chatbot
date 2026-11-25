@@ -192,7 +192,10 @@ managed block.
   repository; the original PRIME working copy and its databases MUST NOT be
   modified from here.
 - Owner approval is REQUIRED before Git commits, pushes, PR creation, merges, destructive actions, production cutover, or runtime database mutations.
-- Execution model: one Oh My Pi (OMP) agent, sequential execution, one scoped assignment at a time. Do not create subagents unless explicitly requested.
+- Execution model: OMP may orchestrate native subagents for independent work
+  concurrently; dependent work must respect its prerequisites. The main agent
+  remains accountable for integration, verification, scope, and final reporting.
+  Coordinate changes to shared resources and preserve the Owner approvals above.
 - Development workflow: PLAN → IMPLEMENT → VERIFY → REVIEW → CLEAN → DONE.
 - Correction workflow: FAIL → FIX → VERIFY → REVIEW.
 - Environment blocker workflow: ENVIRONMENT BLOCKED → UNBLOCK ENVIRONMENT → VERIFY.
