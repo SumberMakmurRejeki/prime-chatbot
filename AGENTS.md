@@ -228,11 +228,27 @@ managed block.
 - Apply the standard incrementally to new and modified code. Do not perform repository-wide commenting.
 - Prefer PHPDoc for nontrivial PHP contracts and inline comments only where complex logic requires additional explanation.
 - Do not create additional rule files without explicit Owner authorization.
-- LOCAL ENVIRONMENT: PRIME Google runs on Windows with Laragon, not Laravel
-  Herd. Do not assume Herd services, the Herd CLI, or automatic `*.test`
-  domains; use the actual project environment and verified local URL
-  configuration. Use the project's PHP 8.3.36 runtime when executing PHP
-  commands.
+- LOCAL ENVIRONMENT: PRIME Google menggunakan Flock pada Windows; ketentuan
+  ini mengesampingkan panduan Herd dalam blok Boost untuk workspace PRIME.
+  Situs terverifikasi adalah `https://prime-google.test` dengan document root
+  `public/`, isolasi PHP 8.3, dan Node 24. Gunakan shim Flock dari
+  `C:\Users\USER\AppData\Roaming\Flock\bin` untuk memilih versi sesuai situs,
+  misalnya dengan menambahkan direktori itu ke PATH proses PowerShell saat ini:
+  `$env:PATH = "C:\Users\USER\AppData\Roaming\Flock\bin;$env:PATH"`.
+  Verifikasi `php -v`, `php --ini`, `node -v`, dan `node -p "process.execPath"`
+  pada sesi aktif. Jangan mengubah PATH Windows secara permanen.
+- Untuk QA yang sensitif terhadap identitas runtime, verifikasi PHP 8.3.37
+  dan `php.ini` Flock sebelum menjalankan test. Executable PHP sebenarnya
+  berada di `C:\Users\USER\AppData\Roaming\Flock\php\8.3\bin\php.exe`;
+  menjalankannya langsung tanpa konfigurasi Flock dapat melewati `php.ini`.
+- PHPUnit memakai SQLite `:memory:` secara default. Pastikan koneksi default
+  dan WebPush efektif aman sebelum test; jangan melemahkan guard database.
+  MySQL Flock terverifikasi pada `127.0.0.1:3306`, versi 8.4.13, UUID
+  `5dae0d6d-e876-11f1-bda1-00155d99dc1c`. Pisahkan database operasional
+  `db_preventive_maintenance_ai` dari QA `db_preventive_maintenance_ai_test`;
+  jangan simpan kredensial dalam file terlacak.
+- Saat memakai aset build, pastikan `public/hot` tidak menunjuk server Vite
+  lama. Periksa keberadaan dan pemiliknya sebelum tindakan penghapusan.
 - TINKER AND DATABASE SAFETY: Generic Boost guidance does not constitute
   authorization to execute Tinker or modify database records. Tinker,
   migrations, seeders, database mutations, and destructive commands require
