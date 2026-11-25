@@ -1,6 +1,8 @@
 import { createApp, h, type DefineComponent } from 'vue';
 import { createInertiaApp } from '@inertiajs/vue3';
 import { retireLegacyPushWorker } from './legacy-push-worker-cleanup';
+import { VApp } from 'vuetify/components';
+import vuetify from './plugins/vuetify';
 
 retireLegacyPushWorker();
 
@@ -17,6 +19,11 @@ void createInertiaApp({
         return (await page()).default;
     },
     setup({ el, App, props, plugin }) {
-        createApp({ render: () => h(App, props) }).use(plugin).mount(el);
+        createApp({
+            render: () => h(VApp, { class: 'prime-app' }, () => h(App, props)),
+        })
+            .use(plugin)
+            .use(vuetify)
+            .mount(el);
     },
 });
